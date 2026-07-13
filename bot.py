@@ -17,13 +17,17 @@ from pipecat.runner.utils import create_transport
 from pipecat.services.openai.stt import OpenAIRealtimeSTTService
 from pipecat.services.openai.tts import OpenAITTSService
 from pipecat.services.openai.responses.llm import OpenAIResponsesLLMService
-from pipecat.transports.base_transport import BaseTransport
+from pipecat.transports.base_transport import BaseTransport, TransportParams
 from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams
 from pipecat.workers.runner import WorkerRunner
 
 load_dotenv(override=True)
 
 transport_params = {
+        "webrtc": lambda: TransportParams(
+            audio_in_enabled=True,
+            audio_out_enabled=True,
+            ),
         "twilio": lambda: FastAPIWebsocketParams(
             audio_in_enabled=True,
             audio_out_enabled=True,
@@ -55,9 +59,8 @@ async def run_bot(
                 system_instruction = (
                     "You are a voicemail assistant for BillBoard Source billboard advertising company "
                     "speak naturally and briefly. ask one question at at time "
-                    "Collect the callers name company phone number email "
-                    "desired billboard location, duration of campaign example: 1 month up to 12 month period "
-                    "get the estimated budget if they have one "
+                    "Collect the callers name, company, phone number, email "
+                    "desired billboard location "
                     "confirm the phone number and email before ending the call "
                     "dont use markdown because your response is spoken aloud "
                     ),
@@ -65,15 +68,23 @@ async def run_bot(
             )
 
     # the mouth of the operation tts
+    instructions = """Voice: Warm, upbeat, and reassuring, with a steady
+    and confident cadence that keeps the conversation calm and productive.\n\n
+    Tone: Positive and solution-oriented, always focusing on the next steps rather
+    than dwelling on the problem.\n\nDialect: Neutral and professional,
+    avoiding overly casual speech but maintaining a friendly and approachable style.
+    \n\nPronunciation: Clear and precise, with a natural rhythm that emphasizes
+    key words to instill confidence and keep the customer engaged.
+    \n\nFeatures: Uses empathetic phrasing, gentle reassurance,
+    and proactive language to shift the focus from frustration to resolution."""
+
     tts = OpenAITTSService(
             api_key = api_key,
             settings = OpenAITTSService.Settings(
                 model = "gpt-4o-mini-tts",
-                voice = "coral",
-                instructions = (
-                    "speak warmly and professionally at a moderate pace "
-                    "sound like a helpful sales coordinator"
-                    ),
+                voice = "marin",
+                instructions = instructions,
+                speed = 1.15,
                 ),
             )
 
@@ -103,8 +114,6 @@ async def run_bot(
     worker = PipelineWorker(
             pipeline,
             params = PipelineParams(
-                audio_in_sample_rate=8000,
-                audio_out_sample_rate=8000,
                 enable_metrics = True,
                 enable_usage_metrics = True,
                 ),
@@ -154,5 +163,3 @@ async def bot(runner_args: RunnerArguments) -> None:
     except Exception:
         logger.exception("bot failed while starting the twilio call")
         raise
-
-
