@@ -1,0 +1,10 @@
+[project]
+name = "voicemail-agent"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "pipecat-ai[openai,runner,silero,websocket]>=1.5.0",
+    "python-dotenv>=1.2.2",
+]
