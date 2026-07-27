@@ -21,6 +21,8 @@ from pipecat.transports.base_transport import BaseTransport, TransportParams
 from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams
 from pipecat.workers.runner import WorkerRunner
 
+from src.data_source.twilio import get_call_info
+
 load_dotenv(override=True)
 
 transport_params = {
@@ -124,12 +126,22 @@ async def run_bot(
     async def on_client_connected(transport, client) -> None:
         logger.info("Twilio caller connected")
 
+        call_sid = runner_args.call_data.call_id if runner_args.call_data else None
+        call_info = await get_call_info(call_sid)
+        caller_number_instruction = ""
+        if call_info and call_info.from_number:
+            caller_number_instruction = (
+                f" Twilio reports the caller's phone number as {call_info.from_number}."
+                " Use it as their phone number and ask them to confirm it."
+            )
+
         # add an instruction that causes the bot to speak first.
         context.add_message(
                 {
                     "role": "developer",
                     "content" : (
                         "Greet the caller, explain that you are a AI voicemail agent and can help collect client info and a human will contact you during normal business hours"
+                        f"{caller_number_instruction}"
                         )
                 }
             )
