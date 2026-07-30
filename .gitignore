@@ -10,4 +10,7 @@ wheels/
 .venv
 .env
 .env.*
-!.env.exmaple
+!.env.example
+
+# Local runtime logs
+logs/

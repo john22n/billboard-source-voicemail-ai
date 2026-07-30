@@ -1,10 +1,9 @@
 import asyncio
-import json
 import os
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from src.data_source.twilio import DEFAULT_WORKSPACE_SID, get_call_info
+from src.data_source.twilio import get_call_info
 
 
 class TwilioTests(unittest.TestCase):
@@ -19,17 +18,9 @@ class TwilioTests(unittest.TestCase):
         response = MagicMock(status=200)
         response.json = AsyncMock(
             return_value={
-                "tasks": [
-                    {
-                        "attributes": json.dumps(
-                            {
-                                "call_sid": "CA123",
-                                "from": "+15551234567",
-                                "to": "+15557654321",
-                            }
-                        )
-                    }
-                ]
+                "sid": "CA123",
+                "from": "+15551234567",
+                "to": "+15557654321",
             }
         )
         response_context = AsyncMock()
@@ -63,21 +54,11 @@ class TwilioTests(unittest.TestCase):
         request_url = session.get.call_args.args[0]
         self.assertEqual(
             request_url,
-            "https://taskrouter.twilio.com/v1/Workspaces/"
-            f"{DEFAULT_WORKSPACE_SID}/Tasks",
+            "https://api.twilio.com/2010-04-01/Accounts/AC123/Calls/CA123.json",
         )
         self.assertEqual(
             session.get.call_args.kwargs["headers"],
             {"Authorization": "Basic QUMxMjM6c2VjcmV0"},
-        )
-        self.assertEqual(
-            session.get.call_args.kwargs["params"],
-            {
-                "EvaluateTaskAttributes": (
-                    '(call_sid == "CA123" OR worker_call_sid == "CA123")'
-                ),
-                "PageSize": "1",
-            },
         )
 
 

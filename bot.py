@@ -1,10 +1,11 @@
 import os
+from typing import Any, cast
 
 from dotenv import load_dotenv
 from loguru import logger
 
 from pipecat.audio.vad.silero import SileroVADAnalyzer
-from pipecat.frames.frames import LLMRunFrame
+from pipecat.flows import FlowManager
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.worker import PipelineParams, PipelineWorker
 from pipecat.processors.aggregators.llm_context import LLMContext
@@ -14,14 +15,17 @@ from pipecat.processors.aggregators.llm_response_universal import (
         )
 from pipecat.runner.types import RunnerArguments
 from pipecat.runner.utils import create_transport
+from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.services.openai.stt import OpenAIRealtimeSTTService
 from pipecat.services.openai.tts import OpenAITTSService
-from pipecat.services.openai.responses.llm import OpenAIResponsesLLMService
 from pipecat.transports.base_transport import BaseTransport, TransportParams
 from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams
 from pipecat.workers.runner import WorkerRunner
 
 from src.data_source.twilio import get_call_info
+from src.flows.tools import submit_nutshell_lead, write_audit_event
+from src.flows.voicemail import create_initial_node
+from src.system_prompts.voicemail import initial_message
 
 load_dotenv(override=True)
 
@@ -35,6 +39,13 @@ transport_params = {
             audio_out_enabled=True,
             ),
         }
+
+
+async def finalize_call(flow_manager: FlowManager) -> None:
+    """Submit the lead after the call pipeline has finished."""
+    write_audit_event("call_completed")
+    await submit_nutshell_lead({}, flow_manager)
+
 
 async def run_bot(
         transport: BaseTransport,
@@ -55,17 +66,11 @@ async def run_bot(
             )
 
     # the brains of the operation recieves transcripts and generatees response text
-    llm = OpenAIResponsesLLMService(
+    llm = OpenAILLMService(
             api_key = api_key,
-            settings = OpenAIResponsesLLMService.Settings(
-                system_instruction = (
-                    "You are a voicemail assistant for BillBoard Source billboard advertising company "
-                    "speak naturally and briefly. ask one question at at time "
-                    "Collect the callers name, company, phone number, email "
-                    "desired billboard location "
-                    "confirm the phone number and email before ending the call "
-                    "dont use markdown because your response is spoken aloud "
-                    ),
+            settings = OpenAILLMService.Settings(
+                model = "gpt-4.1",
+                system_instruction = initial_message,
                 ),
             )
 
@@ -90,11 +95,11 @@ async def run_bot(
                 ),
             )
 
-    # store the conversion passed to the LLM
+    # store the conversation passed to the LLM
     context = LLMContext()
 
     # silero detects when the caller starts and stops speaking
-    user_aggregator, assistant_aggregator = LLMContextAggregatorPair(
+    context_aggregator = LLMContextAggregatorPair(
             context,
             user_params = LLMUserAggregatorParams(
                 vad_analyzer = SileroVADAnalyzer(),
@@ -105,11 +110,11 @@ async def run_bot(
             [
                 transport.input(),
                 stt,
-                user_aggregator,
+                context_aggregator.user(),
                 llm,
                 tts,
                 transport.output(),
-                assistant_aggregator,
+                context_aggregator.assistant(),
             ]
         )
 
@@ -122,34 +127,30 @@ async def run_bot(
             idle_timeout_secs = runner_args.pipeline_idle_timeout_secs,
             )
 
+    flow_manager = FlowManager(
+            worker = worker,
+            llm = cast(Any, llm),
+            context_aggregator = context_aggregator,
+            transport = transport,
+            )
+    flow_manager.state["llm_context"] = context
+
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client) -> None:
         logger.info("Twilio caller connected")
+        write_audit_event("call_connected")
 
         call_sid = runner_args.call_data.call_id if runner_args.call_data else None
         call_info = await get_call_info(call_sid)
-        caller_number_instruction = ""
         if call_info and call_info.from_number:
-            caller_number_instruction = (
-                f" Twilio reports the caller's phone number as {call_info.from_number}."
-                " Use it as their phone number and ask them to confirm it."
-            )
+            flow_manager.state["phone"] = call_info.from_number
 
-        # add an instruction that causes the bot to speak first.
-        context.add_message(
-                {
-                    "role": "developer",
-                    "content" : (
-                        "Greet the caller, explain that you are a AI voicemail agent and can help collect client info and a human will contact you during normal business hours"
-                        f"{caller_number_instruction}"
-                        )
-                }
-            )
-        await worker.queue_frames([LLMRunFrame()])
+        await flow_manager.initialize(create_initial_node())
 
-    @transport.event_handler("on_client_disconnect")
-    async def on_client_disconnect(transport, client) -> None:
+    @transport.event_handler("on_client_disconnected")
+    async def on_client_disconnected(transport, client) -> None:
         logger.info("Twilio caller disconnected")
+        write_audit_event("call_disconnected")
         await worker.cancel()
 
     worker_runner = WorkerRunner(
@@ -158,7 +159,10 @@ async def run_bot(
             )
 
     await worker_runner.add_workers(worker)
-    await worker_runner.run()
+    try:
+        await worker_runner.run()
+    finally:
+        await finalize_call(flow_manager)
 
 async def bot(runner_args: RunnerArguments) -> None:
     """ entry point used by Pipecat's development runner"""
