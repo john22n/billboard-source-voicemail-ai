@@ -1,14 +1,35 @@
 # billboard-source-voicemail-ai
 python app using pipecat to create a voicemail AI system
 
-## Twilio TaskRouter caller information
+## Twilio caller information
 
-When the voicemail worker connects, its Twilio call SID is used to find the
-matching TaskRouter task in the `Billboard Source Sales` workspace. Caller and
-dialed numbers are read from the task's `from` and `to` attributes.
+When the voicemail worker connects, its Twilio call SID is used to retrieve the
+call from Twilio's Calls API. Caller and dialed numbers are read directly from
+the call's `from` and `to` fields.
 
-The workspace SID defaults to the configured production workspace and can be
-overridden with `TWILIO_TASKROUTER_WORKSPACE_SID`.
+Set `TWILIO_ACCOUNT_SID` and `TWILIO_AUTH_TOKEN` in your local `.env` file. No
+Twilio resource identifiers or credentials are stored in the repository.
+
+### Run Twilio locally with ngrok
+
+Install and authenticate the ngrok CLI once, then start both Pipecat and ngrok
+with one command:
+
+```bash
+./dev-twilio.sh
+```
+
+The script discovers the generated HTTPS tunnel, passes its hostname to the
+Pipecat Twilio runner, and prints the public voice webhook URL. Set that URL as
+the Twilio phone number's incoming-call webhook. Press Ctrl+C to stop both
+processes.
+
+Pipecat uses port `7860` by default. Override it or pass additional Pipecat
+runner arguments when needed:
+
+```bash
+PORT=8000 ./dev-twilio.sh --verbose
+```
 
 ## Neon billboard locations
 
@@ -16,12 +37,14 @@ Set the project-scoped Neon API key in your environment:
 
 ```dotenv
 NEON_API_KEY=your-neon-api-key
+NEON_PROJECT_ID=your-neon-project-id
 ```
 
 `get_billboard_locations()` uses the key to retrieve a pooled connection URI for
-the `billboardsourceAI-prod-2` project's production `neondb` database, then reads
-the `billboard_locations` table. A `DATABASE_URL`, when set, takes precedence and
-avoids the extra Neon API request.
+the configured project's `neondb` database, then reads the
+`billboard_locations` table. A `DATABASE_URL`, when set, takes precedence and
+avoids the extra Neon API request. Keep all real values in `.env`, which is
+ignored by Git; use `.env.example` as the safe configuration template.
 
 ## Nutshell leads
 
@@ -30,6 +53,7 @@ Set the Nutshell user's email address and API key in your environment:
 ```dotenv
 NUTSHELL_EMAIL=user@example.com
 NUTSHELL_API_KEY=your-api-key
+NUTSHELL_ALTERNATE_ASSIGNEE_EMAIL=alternate@example.com
 ```
 
 Create one lead through the Nutshell REST API:
@@ -50,5 +74,6 @@ lead = await create_nutshell_lead(
 )
 ```
 
-Each lead has a one-in-three chance of being assigned to Ashton Pruitt. The
-remaining leads are assigned to the user configured by `NUTSHELL_EMAIL`.
+When `NUTSHELL_ALTERNATE_ASSIGNEE_EMAIL` is configured, each lead has a
+one-in-three chance of being assigned to that user. Remaining leads are assigned
+to the user configured by `NUTSHELL_EMAIL`.

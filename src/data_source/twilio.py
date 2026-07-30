@@ -1,4 +1,3 @@
-import json
 import os
 
 import aiohttp
@@ -7,11 +6,8 @@ from loguru import logger
 from src.models.twilio import CallInfo
 
 
-DEFAULT_WORKSPACE_SID = "WSe6865474d0ee85f098cccf40ade989cb"
-
-
 async def get_call_info(call_sid: str | None) -> CallInfo | None:
-    """Fetch phone numbers from the TaskRouter task for a Twilio call."""
+    """Fetch phone numbers directly from Twilio's Calls API."""
     if not call_sid:
         return None
 
@@ -21,13 +17,9 @@ async def get_call_info(call_sid: str | None) -> CallInfo | None:
         logger.warning("Missing Twilio credentials, cannot fetch call info")
         return None
 
-    workspace_sid = os.getenv(
-        "TWILIO_TASKROUTER_WORKSPACE_SID",
-        DEFAULT_WORKSPACE_SID,
-    )
     url = (
-        "https://taskrouter.twilio.com/v1/Workspaces/"
-        f"{workspace_sid}/Tasks"
+        f"https://api.twilio.com/2010-04-01/Accounts/{account_sid}/"
+        f"Calls/{call_sid}.json"
     )
 
     try:
@@ -37,38 +29,15 @@ async def get_call_info(call_sid: str | None) -> CallInfo | None:
             async with session.get(
                 url,
                 headers={"Authorization": authorization},
-                params={
-                    "EvaluateTaskAttributes": (
-                        f'(call_sid == "{call_sid}" OR '
-                        f'worker_call_sid == "{call_sid}")'
-                    ),
-                    "PageSize": "1",
-                },
             ) as response:
                 if response.status != 200:
-                    error_text = await response.text()
-                    logger.error(
-                        "Twilio API error ({}): {}",
-                        response.status,
-                        error_text,
-                    )
+                    logger.error("Twilio Calls API error ({})", response.status)
                     return None
 
                 data = await response.json()
-                tasks = data.get("tasks", [])
-                if not tasks:
-                    logger.warning("No TaskRouter task found for call {}", call_sid)
-                    return None
-
-                try:
-                    attributes = json.loads(tasks[0].get("attributes") or "{}")
-                except json.JSONDecodeError as error:
-                    logger.error("Invalid TaskRouter task attributes: {}", error)
-                    return None
-
                 return CallInfo(
-                    from_number=attributes.get("from") or attributes.get("caller"),
-                    to_number=attributes.get("to") or attributes.get("called"),
+                    from_number=data.get("from"),
+                    to_number=data.get("to"),
                 )
     except Exception as error:
         logger.error("Error fetching call info from Twilio: {}", error)

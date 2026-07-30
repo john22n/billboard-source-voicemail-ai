@@ -7,6 +7,8 @@ import aiohttp
 
 from src.data_source.nutshell import (
     NUTSHELL_API_URL,
+    _add_phone_to_contact,
+    _find_or_create_account,
     _find_or_create_contact,
     _nutshell_request,
     _resolve_assignee_id,
@@ -52,14 +54,19 @@ class NutshellTests(unittest.TestCase):
 
         session.request.assert_called_once()
 
-    def test_one_in_three_assignment_resolves_ashton(self) -> None:
+    def test_one_in_three_assignment_resolves_alternate_user(self) -> None:
         users = {
             "users": [
-                {"id": "3-users", "emails": ["sky@billboardsource.com"]},
-                {"id": "35-users", "emails": ["ashton@billboardsource.com"]},
+                {"id": "3-users", "emails": ["default@example.com"]},
+                {"id": "35-users", "emails": ["alternate@example.com"]},
             ]
         }
         with (
+            patch.dict(
+                os.environ,
+                {"NUTSHELL_ALTERNATE_ASSIGNEE_EMAIL": "alternate@example.com"},
+                clear=True,
+            ),
             patch("src.data_source.nutshell.random.randrange", return_value=0),
             patch(
                 "src.data_source.nutshell._nutshell_request",
@@ -67,10 +74,55 @@ class NutshellTests(unittest.TestCase):
             ),
         ):
             user_id = asyncio.run(
-                _resolve_assignee_id(MagicMock(), {}, "sky@billboardsource.com")
+                _resolve_assignee_id(MagicMock(), {}, "default@example.com")
             )
 
         self.assertEqual(user_id, "35-users")
+
+    def test_account_lookup_does_not_send_commas_in_name_filter(self) -> None:
+        request = AsyncMock(
+            side_effect=[
+                {"accounts": []},
+                {"accounts": [{"id": "1-accounts"}]},
+            ]
+        )
+
+        with patch("src.data_source.nutshell._nutshell_request", new=request):
+            account_id = asyncio.run(
+                _find_or_create_account(
+                    MagicMock(),
+                    {},
+                    "IT works, IT consulting firm",
+                )
+            )
+
+        self.assertEqual(account_id, "1-accounts")
+        self.assertEqual(
+            request.await_args_list,
+            [
+                call(
+                    ANY,
+                    "GET",
+                    "accounts",
+                    {},
+                    params={
+                        "filter[name]": "IT works IT consulting firm",
+                        "page[limit]": 100,
+                    },
+                ),
+                call(
+                    ANY,
+                    "POST",
+                    "accounts",
+                    {},
+                    payload={
+                        "accounts": [
+                            {"name": "IT works, IT consulting firm"},
+                        ]
+                    },
+                ),
+            ],
+        )
 
     def test_contact_lookup_reuses_first_exact_email_match(self) -> None:
         contacts = {
@@ -99,6 +151,45 @@ class NutshellTests(unittest.TestCase):
             "contacts",
             {},
             params={"filter[email]": "jane@example.com", "page[limit]": 100},
+        )
+
+    def test_existing_contact_receives_new_twilio_phone(self) -> None:
+        contact = {
+            "id": "2-contacts",
+            "phones": [
+                {"value": "+15550000000", "isPrimary": True},
+            ],
+        }
+        request = AsyncMock(return_value=None)
+
+        with patch("src.data_source.nutshell._nutshell_request", new=request):
+            asyncio.run(
+                _add_phone_to_contact(
+                    MagicMock(),
+                    {"Authorization": "Basic credentials"},
+                    contact,
+                    "+15551234567",
+                )
+            )
+
+        request.assert_awaited_once_with(
+            ANY,
+            "PATCH",
+            "contacts/2-contacts",
+            {
+                "Authorization": "Basic credentials",
+                "Content-Type": "application/json-patch+json",
+            },
+            payload=[
+                {
+                    "op": "replace",
+                    "path": "/contacts/0/phones",
+                    "value": [
+                        {"value": "+15550000000", "isPrimary": True},
+                        {"value": "+15551234567", "isPrimary": False},
+                    ],
+                }
+            ],
         )
 
     def test_lead_information_maps_to_rest_resources(self) -> None:
@@ -260,7 +351,10 @@ class NutshellTests(unittest.TestCase):
                     headers,
                     payload={
                         "data": {
-                            "body": "--- CALL TRANSCRIPT ---\n\nI need a billboard.",
+                            "body": (
+                                "--- CALL SUMMARY ---\n\nInterested in digital\n\n"
+                                "--- CALL TRANSCRIPT ---\n\nI need a billboard."
+                            ),
                             "links": {"parent": "6-leads"},
                         }
                     },

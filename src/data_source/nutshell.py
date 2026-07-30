@@ -10,7 +10,6 @@ from src.models.sales_call_lead import LeadInformation
 
 
 NUTSHELL_API_URL = "https://app.nutshell.com/rest"
-ASHTON_EMAIL = "ashton@billboardsource.com"
 
 
 async def _nutshell_request(
@@ -20,7 +19,7 @@ async def _nutshell_request(
     headers: dict[str, str],
     *,
     params: dict[str, Any] | None = None,
-    payload: dict[str, Any] | None = None,
+    payload: Any | None = None,
     retries: int = 2,
 ) -> Any:
     request_options: dict[str, Any] = {"headers": headers}
@@ -60,7 +59,12 @@ async def _resolve_assignee_id(
     headers: dict[str, str],
     default_email: str,
 ) -> str:
-    assignee_email = ASHTON_EMAIL if random.randrange(3) == 0 else default_email
+    alternate_email = os.getenv("NUTSHELL_ALTERNATE_ASSIGNEE_EMAIL")
+    assignee_email = (
+        alternate_email
+        if alternate_email and random.randrange(3) == 0
+        else default_email
+    )
     data = await _nutshell_request(session, "GET", "users", headers)
     for user in data.get("users", []):
         if any(
@@ -79,12 +83,15 @@ async def _find_or_create_account(
     if not business or not (name := business.strip()):
         return None
 
+    # Nutshell returns HTTP 500 when a name filter contains commas. Remove them
+    # only from the lookup value; preserve the caller's business name on create.
+    lookup_name = re.sub(r",\s*", " ", name)
     data = await _nutshell_request(
         session,
         "GET",
         "accounts",
         headers,
-        params={"filter[name]": name, "page[limit]": 100},
+        params={"filter[name]": lookup_name, "page[limit]": 100},
     )
     for account in data.get("accounts", []):
         if account.get("name", "").lower() == name.lower():
@@ -111,6 +118,57 @@ def _contact_payload(lead: LeadInformation, email: str | None) -> dict[str, Any]
     return contact
 
 
+def _phone_text(phone: dict[str, Any]) -> str:
+    value = phone.get("value", "")
+    if isinstance(value, dict):
+        return str(
+            value.get("E164")
+            or value.get("countryCodeAndNumber")
+            or value.get("number")
+            or ""
+        )
+    return str(value)
+
+
+async def _add_phone_to_contact(
+    session: aiohttp.ClientSession,
+    headers: dict[str, str],
+    contact: dict[str, Any],
+    phone: str | None,
+) -> None:
+    if not phone:
+        return
+    phone = phone.strip()
+    if not phone:
+        return
+
+    phones = contact.get("phones", [])
+    normalized_phone = re.sub(r"\D", "", phone)
+    if any(
+        re.sub(r"\D", "", _phone_text(existing)) == normalized_phone
+        for existing in phones
+    ):
+        return
+
+    updated_phones = [
+        *phones,
+        {"value": phone, "isPrimary": not phones},
+    ]
+    await _nutshell_request(
+        session,
+        "PATCH",
+        f"contacts/{contact['id']}",
+        {**headers, "Content-Type": "application/json-patch+json"},
+        payload=[
+            {
+                "op": "replace",
+                "path": "/contacts/0/phones",
+                "value": updated_phones,
+            }
+        ],
+    )
+
+
 async def _find_or_create_contact(
     session: aiohttp.ClientSession,
     headers: dict[str, str],
@@ -135,6 +193,12 @@ async def _find_or_create_contact(
                 item.get("value", "").casefold() == email.casefold()
                 for item in existing.get("emails", [])
             ):
+                await _add_phone_to_contact(
+                    session,
+                    headers,
+                    existing,
+                    lead.phone,
+                )
                 return existing["id"]
 
     if account_id:
@@ -263,7 +327,14 @@ async def create_nutshell_lead(lead: LeadInformation) -> dict[str, Any]:
                 payload={"stageset": pipeline_id},
             )
 
+        note_sections = []
+        if lead.notes and lead.notes.strip():
+            note_sections.append(f"--- CALL SUMMARY ---\n\n{lead.notes.strip()}")
         if lead.transcript and lead.transcript.strip():
+            note_sections.append(
+                f"--- CALL TRANSCRIPT ---\n\n{lead.transcript.strip()}"
+            )
+        if note_sections:
             await _nutshell_request(
                 session,
                 "POST",
@@ -271,7 +342,7 @@ async def create_nutshell_lead(lead: LeadInformation) -> dict[str, Any]:
                 headers,
                 payload={
                     "data": {
-                        "body": f"--- CALL TRANSCRIPT ---\n\n{lead.transcript.strip()}",
+                        "body": "\n\n".join(note_sections),
                         "links": {"parent": lead_id},
                     }
                 },
