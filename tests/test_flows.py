@@ -18,6 +18,13 @@ from src.flows.tools import (
 from src.flows.voicemail import (
     collect_billboard_location,
     collect_email,
+    collect_first_name,
+    collect_inquiry_type,
+    collect_last_name,
+    collect_phone,
+    collect_property_company,
+    confirm_lead_collection,
+    create_billboard_location_node,
     create_end_node,
     save_call_summary,
 )
@@ -45,45 +52,63 @@ class FlowTests(unittest.TestCase):
             {"timestamp", "event", "error_type", "http_status"},
         )
 
-    def test_location_lookup_populates_state_and_pricing_node(self) -> None:
-        flow_manager = cast(FlowManager, SimpleNamespace(state={}))
-        pricing = {
-            "city": "Denver",
-            "state": "CO",
-            "avg_daily_views": "20,000",
-            "four_week_range": "$2,000-$4,000",
-        }
-
-        with patch(
-            "src.flows.voicemail.get_location_pricing",
-            new=AsyncMock(return_value=pricing),
-        ):
-            result, next_node = asyncio.run(
-                collect_billboard_location(flow_manager, "Denver, CO")
-            )
-
-        self.assertTrue(result["pricing_found"])
-        self.assertEqual(flow_manager.state["location_pricing"], pricing)
-        self.assertEqual(next_node.get("name"), "pricing_summary")
-        pricing_prompt = next_node["task_messages"][0]["content"]
-        self.assertIn("20,000", pricing_prompt)
-        self.assertIn("$2,000-$4,000", pricing_prompt)
-
-    def test_location_lookup_failure_still_collects_contact_info(self) -> None:
+    def test_property_inquiry_routes_to_company_question(self) -> None:
         flow_manager = cast(FlowManager, SimpleNamespace(state={}))
 
-        with patch(
-            "src.flows.voicemail.get_location_pricing",
-            new=AsyncMock(side_effect=RuntimeError("database unavailable")),
-        ):
-            result, next_node = asyncio.run(
-                collect_billboard_location(flow_manager, "Denver, CO")
-            )
+        result, next_node = asyncio.run(
+            collect_inquiry_type(flow_manager, "property question")
+        )
 
-        self.assertFalse(result["pricing_found"])
-        self.assertEqual(next_node.get("name"), "location_not_found")
+        self.assertEqual(result["value"], "property")
+        self.assertEqual(next_node.get("name"), "property_company")
 
-    def test_email_transitions_to_summary_without_asking_for_phone(self) -> None:
+    def test_property_company_transitions_to_google_maps_referral(self) -> None:
+        flow_manager = cast(FlowManager, SimpleNamespace(state={}))
+
+        _, next_node = asyncio.run(
+            collect_property_company(flow_manager, "Lamar Advertising")
+        )
+
+        self.assertEqual(next_node.get("name"), "property_referral")
+        prompt = next_node["task_messages"][0]["content"]
+        self.assertIn("Lamar Advertising", prompt)
+        self.assertIn("Google Maps", prompt)
+        self.assertIn("Thanks for calling Billboard Source, goodbye", prompt)
+        self.assertIn("Do not ask", prompt)
+        self.assertEqual(next_node.get("post_actions"), [{"type": "end_conversation"}])
+
+    def test_advertising_inquiry_requests_permission_before_first_name(self) -> None:
+        flow_manager = cast(FlowManager, SimpleNamespace(state={}))
+
+        _, intro_node = asyncio.run(
+            collect_inquiry_type(flow_manager, "advertising")
+        )
+        _, first_name_node = asyncio.run(
+            confirm_lead_collection(flow_manager, True)
+        )
+
+        self.assertEqual(intro_node.get("name"), "advertising_intro")
+        self.assertEqual(first_name_node.get("name"), "first_name")
+
+    def test_location_transitions_directly_to_email(self) -> None:
+        flow_manager = cast(FlowManager, SimpleNamespace(state={}))
+
+        _, next_node = asyncio.run(
+            collect_billboard_location(flow_manager, "Denver, CO")
+        )
+
+        self.assertEqual(flow_manager.state["billboard_location"], "Denver, CO")
+        self.assertEqual(next_node.get("name"), "email")
+
+    def test_location_node_never_repeats_or_confirms_location(self) -> None:
+        location_node = create_billboard_location_node()
+
+        prompt = location_node["task_messages"][0]["content"]
+        self.assertIn("do not ask for it again", prompt)
+        self.assertIn("ask for the city and state once", prompt)
+        self.assertIn("Do not repeat, confirm, or ask", prompt)
+
+    def test_email_transitions_to_phone_confirmation(self) -> None:
         flow_manager = cast(
             FlowManager,
             SimpleNamespace(state={"phone": "+15551234567"}),
@@ -94,21 +119,102 @@ class FlowTests(unittest.TestCase):
         )
 
         self.assertEqual(flow_manager.state["email"], "caller@example.com")
-        self.assertEqual(next_node.get("name"), "summarize_call")
+        self.assertEqual(next_node.get("name"), "confirm_phone")
         self.assertEqual(flow_manager.state["phone"], "+15551234567")
+        phone_prompt = next_node["task_messages"][0]["content"]
+        self.assertIn("+15551234567", phone_prompt)
 
-    def test_generated_summary_is_saved_before_goodbye(self) -> None:
+    def test_confirmed_phone_transitions_to_last_name(self) -> None:
+        flow_manager = cast(
+            FlowManager,
+            SimpleNamespace(state={"phone": "+15551234567"}),
+        )
+
+        _, next_node = asyncio.run(collect_phone(flow_manager, "+15557654321"))
+
+        self.assertEqual(flow_manager.state["phone"], "+15557654321")
+        self.assertEqual(next_node.get("name"), "last_name")
+
+    def test_volunteered_last_name_is_saved_during_first_name_collection(self) -> None:
         flow_manager = cast(FlowManager, SimpleNamespace(state={}))
 
         _, next_node = asyncio.run(
-            save_call_summary(flow_manager, "Caller wants a Denver billboard.")
+            collect_first_name(flow_manager, "Jane", "Smith")
         )
+
+        self.assertEqual(flow_manager.state["first_name"], "Jane")
+        self.assertEqual(flow_manager.state["last_name"], "Smith")
+        self.assertEqual(flow_manager.state["name"], "Jane Smith")
+        self.assertEqual(next_node.get("name"), "advertising_type")
+
+    def test_confirmed_phone_skips_last_name_when_initially_provided(self) -> None:
+        flow_manager = cast(
+            FlowManager,
+            SimpleNamespace(
+                state={
+                    "first_name": "Jane",
+                    "last_name": "Smith",
+                    "name": "Jane Smith",
+                }
+            ),
+        )
+
+        _, next_node = asyncio.run(collect_phone(flow_manager, "+15557654321"))
+
+        self.assertEqual(next_node.get("name"), "summarize_call")
+
+    def test_last_name_completes_name_and_transitions_to_summary(self) -> None:
+        flow_manager = cast(
+            FlowManager,
+            SimpleNamespace(state={"first_name": "Jane"}),
+        )
+
+        _, next_node = asyncio.run(collect_last_name(flow_manager, "Smith"))
+
+        self.assertEqual(flow_manager.state["name"], "Jane Smith")
+        self.assertEqual(next_node.get("name"), "summarize_call")
+
+    def test_generated_summary_announces_assigned_associate_and_ends(self) -> None:
+        flow_manager = cast(
+            FlowManager,
+            SimpleNamespace(state={"first_name": "Jane"}),
+        )
+        create_lead = AsyncMock(
+            return_value={
+                "id": "6-leads",
+                "assignee": {
+                    "id": "3-users",
+                    "name": "Alex",
+                    "email": "alex@example.com",
+                },
+            }
+        )
+
+        with patch(
+            "src.flows.voicemail.submit_nutshell_lead",
+            new=create_lead,
+        ):
+            _, next_node = asyncio.run(
+                save_call_summary(flow_manager, "Caller wants a Denver billboard.")
+            )
 
         self.assertEqual(
             flow_manager.state["call_summary"],
             "Caller wants a Denver billboard.",
         )
-        self.assertEqual(next_node.get("name"), "end")
+        create_lead.assert_awaited_once_with({}, flow_manager)
+        self.assertEqual(flow_manager.state["associate_name"], "Alex")
+        self.assertEqual(flow_manager.state["associate_email"], "alex@example.com")
+        self.assertEqual(next_node.get("name"), "associate_followup")
+        prompt = next_node["task_messages"][0]["content"]
+        self.assertIn("Alex", prompt)
+        self.assertIn("alex@example.com", prompt)
+        self.assertIn("will reach out soon", prompt)
+        self.assertIn("Do not describe this as a transfer or handoff", prompt)
+        self.assertEqual(
+            next_node.get("post_actions"),
+            [{"type": "end_conversation"}],
+        )
 
     def test_end_node_closes_call_before_nutshell_submission(self) -> None:
         end_node = create_end_node()
@@ -207,6 +313,26 @@ class FlowTests(unittest.TestCase):
 
     def test_nutshell_action_skips_lead_without_caller_details(self) -> None:
         flow_manager = cast(FlowManager, SimpleNamespace(state={}))
+        create_lead = AsyncMock(return_value={"id": "6-leads"})
+
+        with patch(
+            "src.flows.tools.create_nutshell_lead",
+            new=create_lead,
+        ):
+            asyncio.run(submit_nutshell_lead({}, flow_manager))
+
+        create_lead.assert_not_awaited()
+
+    def test_nutshell_action_skips_property_inquiry(self) -> None:
+        flow_manager = cast(
+            FlowManager,
+            SimpleNamespace(
+                state={
+                    "inquiry_type": "property",
+                    "phone": "+15551234567",
+                }
+            ),
+        )
         create_lead = AsyncMock(return_value={"id": "6-leads"})
 
         with patch(

@@ -1,0 +1,25 @@
+name: ambiguous_inquiry_routing
+
+judge:
+  eval:
+    service: openai
+    model: gpt-4o-mini
+
+turns:
+  - expect:
+      - event: response
+        eval: "the bot opens with 'Billboard Sales, how can I help you?'"
+
+  - user: "Hi I'm looking for a billboard"
+    expect:
+      - event: response
+        eval: "the bot clarifies whether the caller wants to advertise or has a question about a billboard property"
+
+  - user: "I want to advertise my business"
+    expect:
+      - event: function_call
+        name: collect_inquiry_type
+        args:
+          inquiry_type: advertising
+      - event: response
+        eval: "the bot explains that leasing managers are busy, offers to collect the caller's information, and asks permission"

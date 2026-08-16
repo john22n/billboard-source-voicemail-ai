@@ -76,12 +76,19 @@ def format_call_transcript(context: LLMContext | None) -> str | None:
 async def submit_nutshell_lead(
     action: dict,
     flow_manager: FlowManager,
-) -> None:
+) -> dict[str, Any] | None:
     """Create a Nutshell lead from information collected during the call."""
+    if flow_manager.state.get("inquiry_type") == "property" or (
+        flow_manager.state.get("lead_collection_agreed") is False
+    ):
+        write_audit_event("nutshell_submission_skipped", reason="not_advertising_lead")
+        logger.info("Skipped Nutshell lead for a non-advertising call")
+        return None
+
     existing_submission = flow_manager.state.get("nutshell_submission_task")
     if isinstance(existing_submission, asyncio.Task):
         try:
-            await asyncio.shield(existing_submission)
+            return await asyncio.shield(existing_submission)
         except Exception as error:
             if (
                 flow_manager.state.get("nutshell_submission_task")
@@ -99,7 +106,7 @@ async def submit_nutshell_lead(
                 type(error).__name__,
                 getattr(error, "status", None),
             )
-        return
+        return None
 
     pricing = flow_manager.state.get("location_pricing") or {}
     notes = flow_manager.state.get("call_summary")
@@ -134,7 +141,7 @@ async def submit_nutshell_lead(
     if not any(value and value.strip() for value in caller_details):
         write_audit_event("nutshell_submission_skipped", reason="no_caller_details")
         logger.info("Skipped Nutshell lead without caller details")
-        return
+        return None
 
     submission = asyncio.create_task(create_nutshell_lead(lead))
     flow_manager.state["nutshell_submission_task"] = submission
@@ -155,6 +162,7 @@ async def submit_nutshell_lead(
             lead_id=created_lead.get("id"),
         )
         logger.info("Created Nutshell lead {}", created_lead.get("id"))
+        return created_lead
     except Exception as error:
         if flow_manager.state.get("nutshell_submission_task") is submission:
             flow_manager.state.pop("nutshell_submission_task")
@@ -169,3 +177,4 @@ async def submit_nutshell_lead(
             type(error).__name__,
             getattr(error, "status", None),
         )
+        return None

@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 from loguru import logger
 
 from pipecat.audio.vad.silero import SileroVADAnalyzer
+from pipecat.evals.transport import EvalTransportParams
 from pipecat.flows import FlowManager
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.worker import PipelineParams, PipelineWorker
@@ -30,6 +31,10 @@ from src.system_prompts.voicemail import initial_message
 load_dotenv(override=True)
 
 transport_params = {
+        "eval": lambda: EvalTransportParams(
+            audio_in_enabled=True,
+            audio_out_enabled=True,
+            ),
         "webrtc": lambda: TransportParams(
             audio_in_enabled=True,
             audio_out_enabled=True,
@@ -88,10 +93,10 @@ async def run_bot(
     tts = OpenAITTSService(
             api_key = api_key,
             settings = OpenAITTSService.Settings(
-                model = "gpt-4o-mini-tts",
-                voice = "marin",
+                model = "tts-1-hd",
+                voice = "alloy",
                 instructions = instructions,
-                speed = 1.15,
+                speed = 1.10,
                 ),
             )
 

@@ -1,6 +1,5 @@
 import asyncio
 import os
-import random
 import re
 from typing import Any
 
@@ -52,27 +51,6 @@ def _valid_email(email: str | None) -> str | None:
         return None
     email = email.strip()
     return email if re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email) else None
-
-
-async def _resolve_assignee_id(
-    session: aiohttp.ClientSession,
-    headers: dict[str, str],
-    default_email: str,
-) -> str:
-    alternate_email = os.getenv("NUTSHELL_ALTERNATE_ASSIGNEE_EMAIL")
-    assignee_email = (
-        alternate_email
-        if alternate_email and random.randrange(3) == 0
-        else default_email
-    )
-    data = await _nutshell_request(session, "GET", "users", headers)
-    for user in data.get("users", []):
-        if any(
-            email.lower() == assignee_email.lower()
-            for email in user.get("emails", [])
-        ):
-            return user["id"]
-    raise RuntimeError(f"No Nutshell user found for email: {assignee_email}")
 
 
 async def _find_or_create_account(
@@ -255,6 +233,73 @@ async def _find_or_create_source(
     return created["sources"][0]["id"]
 
 
+def _first_resource(data: Any, resource: str) -> dict[str, Any] | None:
+    if not isinstance(data, dict):
+        return None
+    resources = data.get(resource)
+    if (
+        isinstance(resources, list)
+        and resources
+        and isinstance(resources[0], dict)
+    ):
+        return resources[0]
+    return data if isinstance(data.get("id"), str) else None
+
+
+def _linked_id(resource: dict[str, Any], relationship: str) -> str | None:
+    links = resource.get("links")
+    if not isinstance(links, dict):
+        return None
+    linked = links.get(relationship)
+    if isinstance(linked, str):
+        return linked
+    if isinstance(linked, dict) and isinstance(linked.get("id"), str):
+        return linked["id"]
+    if isinstance(linked, list) and linked:
+        first = linked[0]
+        if isinstance(first, str):
+            return first
+        if isinstance(first, dict) and isinstance(first.get("id"), str):
+            return first["id"]
+    return None
+
+
+async def _get_round_robin_assignee(
+    session: aiohttp.ClientSession,
+    headers: dict[str, str],
+    lead_id: str,
+) -> dict[str, str] | None:
+    lead_data = await _nutshell_request(
+        session,
+        "GET",
+        f"leads/{lead_id}",
+        headers,
+    )
+    lead = _first_resource(lead_data, "leads")
+    owner_id = _linked_id(lead, "owner") if lead else None
+    if not owner_id:
+        return None
+
+    user_data = await _nutshell_request(
+        session,
+        "GET",
+        f"users/{owner_id}",
+        headers,
+    )
+    user = _first_resource(user_data, "users")
+    if not user:
+        return None
+
+    name = user.get("firstName") or user.get("name")
+    emails = user.get("emails")
+    email = emails[0] if isinstance(emails, list) and emails else None
+    return {
+        key: value
+        for key, value in (("id", owner_id), ("name", name), ("email", email))
+        if isinstance(value, str) and value
+    }
+
+
 async def create_nutshell_lead(lead: LeadInformation) -> dict[str, Any]:
     """Map voicemail lead information into linked Nutshell REST resources."""
     user_email = os.getenv("NUTSHELL_EMAIL")
@@ -269,7 +314,6 @@ async def create_nutshell_lead(lead: LeadInformation) -> dict[str, Any]:
     timeout = aiohttp.ClientTimeout(total=15)
 
     async with aiohttp.ClientSession(timeout=timeout) as session:
-        assignee_id = await _resolve_assignee_id(session, headers, user_email)
         account_id = await _find_or_create_account(session, headers, lead.business)
         contact_id = await _find_or_create_contact(
             session,
@@ -286,7 +330,6 @@ async def create_nutshell_lead(lead: LeadInformation) -> dict[str, Any]:
             or "Billboard Lead"
         )
         links: dict[str, Any] = {
-            "owner": assignee_id,
             "sources": [source_id],
         }
         if account_id:
@@ -326,6 +369,14 @@ async def create_nutshell_lead(lead: LeadInformation) -> dict[str, Any]:
                 headers,
                 payload={"stageset": pipeline_id},
             )
+
+        assignee = await _get_round_robin_assignee(
+            session,
+            headers,
+            lead_id,
+        )
+        if assignee:
+            created_lead["assignee"] = assignee
 
         note_sections = []
         if lead.notes and lead.notes.strip():
