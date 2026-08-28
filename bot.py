@@ -4,7 +4,6 @@ from typing import Any, cast
 
 from dotenv import load_dotenv
 from loguru import logger
-
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.evals.transport import EvalTransportParams
 from pipecat.flows import FlowManager
@@ -12,10 +11,10 @@ from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.worker import PipelineParams, PipelineWorker
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import (
-        LLMContextAggregatorPair,
-        LLMUserAggregatorParams,
-        )
-from pipecat.runner.types import RunnerArguments
+    LLMContextAggregatorPair,
+    LLMUserAggregatorParams,
+)
+from pipecat.runner.types import EvalRunnerArguments, RunnerArguments
 from pipecat.runner.utils import create_transport
 from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.services.openai.stt import OpenAIRealtimeSTTService
@@ -154,6 +153,12 @@ async def run_bot(
         call_info = await call_info_task
         if call_info and call_info.from_number:
             flow_manager.state["calling_phone"] = call_info.from_number
+        elif isinstance(runner_args, EvalRunnerArguments) and isinstance(
+            runner_args.body, dict
+        ):
+            calling_phone = runner_args.body.get("calling_phone")
+            if isinstance(calling_phone, str) and calling_phone.strip():
+                flow_manager.state["calling_phone"] = calling_phone.strip()
 
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(transport, client) -> None:

@@ -2,22 +2,19 @@
 # by the NEW BSI Pipeline's round-robin assignment rule.
 name: advertising_lead_round_robin_assignment
 
-judge:
-  eval:
-    service: openai
-    model: gpt-4o-mini
+judge: !include config/audio_judge.yml
 
 turns:
+  - expect: !include config/opening_expectations.yml
+
   - user: "I want to advertise my business."
-    send_after:
-      delay_ms: 8000
     expect:
       - event: function_call
         name: collect_inquiry_type
         args:
           inquiry_type: advertising
-      - event: response
-        eval: "the bot says the leasing managers are busy and, in one request, asks for the caller's full name, business name, target city and state, email address, and callback phone number"
+      - event: tts_response
+        eval: "the bot says the leasing managers are busy and asks the caller to leave their full name, business information, preferred billboard location, and contact information"
 
   - user: "My name is Evaltest Roundrobin. My business is Billboard Source Voice Eval. I want to advertise in Detroit, Michigan. My email is voiceeval@example.com and my phone number is 313-555-0142."
     expect:
@@ -29,3 +26,5 @@ turns:
           billboard_location: Detroit, Michigan
           email: voiceeval@example.com
           phone: 313-555-0142
+      - event: tts_response
+        eval: "the bot names the specific associate assigned to the request, gives that associate's email address, says the associate will contact the caller soon, thanks the caller, and says goodbye without asking another question"

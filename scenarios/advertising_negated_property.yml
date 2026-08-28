@@ -1,11 +1,11 @@
-name: advertising_inquiry_routing
+name: negated_property_routes_to_advertising
 
 judge: !include config/audio_judge.yml
 
 turns:
   - expect: !include config/opening_expectations.yml
 
-  - user: "I wanted to advertise my business."
+  - user: "No, I do not want to build on my property. I want to advertise a community event."
     expect:
       - event: function_call
         name: collect_inquiry_type

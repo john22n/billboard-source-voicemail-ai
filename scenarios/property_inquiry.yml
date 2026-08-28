@@ -1,16 +1,15 @@
 name: property_sign_company_guidance
 
-judge:
-  eval:
-    service: openai
-    model: gpt-4o-mini
+judge: !include config/audio_judge.yml
 
 turns:
+  - expect: !include config/opening_expectations.yml
+
   - user: "Yes, I want to build a billboard on my property."
-    send_after:
-      delay_ms: 8000
     expect:
       - event: function_call
         name: collect_inquiry_type
         args:
           inquiry_type: property
+      - event: tts_response
+        text_contains: "Please Google a local sign company. Thanks for calling Billboard Source, goodbye."

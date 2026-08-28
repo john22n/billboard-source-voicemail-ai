@@ -7,6 +7,7 @@ ENV_FILE="${ENV_FILE:-$SCRIPT_DIR/.env}"
 HOST="${HOST:-127.0.0.1}"
 PORT="${PORT:-7860}"
 SCENARIO="${SCENARIO:-$SCRIPT_DIR/scenarios/inquire_question.yml}"
+RUNNER_BODY="${RUNNER_BODY:-}"
 APP_PID=""
 
 cleanup() {
@@ -42,17 +43,28 @@ if [[ ! -f "$SCENARIO" ]]; then
     exit 1
 fi
 
+if [[ -n "$RUNNER_BODY" && ! -f "$RUNNER_BODY" ]]; then
+    echo "Error: eval runner body not found: $RUNNER_BODY" >&2
+    exit 1
+fi
+
 if lsof -tiTCP:"$PORT" -sTCP:LISTEN >/dev/null; then
     echo "Error: port $PORT is already in use." >&2
     exit 1
 fi
 
+APP_ARGS=(
+    --host "$HOST"
+    --port "$PORT"
+    --transport eval
+)
+if [[ -n "$RUNNER_BODY" ]]; then
+    APP_ARGS+=(--runner-body "$RUNNER_BODY")
+fi
+
 echo "Starting the app with the eval transport on http://$HOST:$PORT ..."
 uv run dotenv -f "$ENV_FILE" run -- \
-    uv run python "$SCRIPT_DIR/main.py" \
-        --host "$HOST" \
-        --port "$PORT" \
-        --transport eval &
+    uv run python "$SCRIPT_DIR/main.py" "${APP_ARGS[@]}" &
 APP_PID=$!
 
 for _ in {1..80}; do

@@ -1,0 +1,19 @@
+concurrency: 1
+runs_dir: ../logs/evals
+bots_dir: ..
+spawn: "{python} {bot} --transport eval --port {port}"
+
+suite:
+  - bot: main.py
+    scenarios:
+      - inquire_question.yml
+      - advertising_negated_property.yml
+      - property_inquiry.yml
+      - advertising_lead_assignment.yml
+      - advertising_missing_information.yml
+
+  - bot: main.py
+    runner_body: incoming_call.json
+    scenarios:
+      - advertising_incoming_callback_accepted.yml
+      - advertising_incoming_callback_replaced.yml

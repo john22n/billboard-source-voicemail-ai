@@ -61,7 +61,7 @@ class FlowTests(unittest.TestCase):
                 }
             ],
         )
-        self.assertFalse(initial_node.get("respond_immediately"))
+        self.assertIs(initial_node.get("respond_immediately"), False)
 
     def test_property_inquiry_routes_directly_to_sign_company_guidance(self) -> None:
         flow_manager = cast(FlowManager, SimpleNamespace(state={}))
@@ -109,6 +109,7 @@ class FlowTests(unittest.TestCase):
         self.assertNotIn("callback number", request.get("text", ""))
         self.assertIs(lead_node.get("respond_immediately"), False)
         prompt = lead_node["task_messages"][0]["content"]
+        self.assertIn("billboard location", prompt)
         self.assertIn("otherwise omit phone", prompt)
         self.assertIn("without repeating or confirming", prompt)
 

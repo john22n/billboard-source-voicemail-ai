@@ -169,6 +169,7 @@ def create_initial_node() -> NodeConfig:
             }
         ],
         functions=[collect_inquiry_type],
+        respond_immediately=False,
     )
 
 
@@ -197,7 +198,8 @@ def create_business_lead_node() -> NodeConfig:
                 "type": "tts_say",
                 "text": (
                     "Billboard Source can help. All our leasing managers are busy, "
-                    "so please leave your full name, business information and contact info."
+                    "so please leave your full name, business information, preferred "
+                    "billboard location and contact info."
                 ),
             }
         ],
@@ -206,11 +208,11 @@ def create_business_lead_node() -> NodeConfig:
                 "role": "developer",
                 "content": (
                     "Wait for the caller to provide their full name, business name, "
-                    "and email address. If they also provide a "
+                    "billboard location, and email address. If they also provide a "
                     "callback phone number, include it; otherwise omit phone. "
                     "Accept the information as provided without repeating or "
                     "confirming it. If anything is missing, ask only for all missing "
-                    "required information in one request. Once the four required "
+                    "required information in one request. Once those four required "
                     "details are available, "
                     "immediately call collect_business_lead."
                 ),

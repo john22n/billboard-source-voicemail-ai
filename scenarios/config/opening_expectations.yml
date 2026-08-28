@@ -1,0 +1,2 @@
+- event: tts_response
+  text_contains: "Thanks for calling Billboard Source, how can I help you? Are you looking to build a billboard on your property or advertise your business?"
