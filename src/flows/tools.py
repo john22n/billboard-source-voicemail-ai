@@ -78,9 +78,7 @@ async def submit_nutshell_lead(
     flow_manager: FlowManager,
 ) -> dict[str, Any] | None:
     """Create a Nutshell lead from information collected during the call."""
-    if flow_manager.state.get("inquiry_type") == "property" or (
-        flow_manager.state.get("lead_collection_agreed") is False
-    ):
+    if flow_manager.state.get("inquiry_type") == "property":
         write_audit_event("nutshell_submission_skipped", reason="not_advertising_lead")
         logger.info("Skipped Nutshell lead for a non-advertising call")
         return None

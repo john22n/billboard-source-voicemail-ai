@@ -8,97 +8,24 @@ judge:
     model: gpt-4o-mini
 
 turns:
-  - expect:
-      - event: response
-        text_contains: "Billboard Sales, how can I help you?"
-
   - user: "I want to advertise my business."
+    send_after:
+      delay_ms: 8000
     expect:
       - event: function_call
         name: collect_inquiry_type
         args:
           inquiry_type: advertising
       - event: response
-        eval: "the bot says the leasing managers are busy, offers to collect the caller's information for a prompt callback, and asks permission"
+        eval: "the bot says the leasing managers are busy and, in one request, asks for the caller's full name, business name, target city and state, email address, and callback phone number"
 
-  - user: "Yes, that would be great."
+  - user: "My name is Evaltest Roundrobin. My business is Billboard Source Voice Eval. I want to advertise in Detroit, Michigan. My email is voiceeval@example.com and my phone number is 313-555-0142."
     expect:
       - event: function_call
-        name: confirm_lead_collection
+        name: collect_business_lead
         args:
-          agreed: true
-      - event: response
-        eval: "the bot asks only for the caller's first name"
-
-  - user: "My first name is Evaltest."
-    expect:
-      - event: function_call
-        name: collect_first_name
-        args:
-          first_name: Evaltest
-      - event: response
-        eval: "the bot asks whether the caller wants to advertise a business, political campaign, or personal message"
-
-  - user: "A business."
-    expect:
-      - event: function_call
-        name: collect_advertising_type
-        args:
-          advertising_type: business
-      - event: response
-        eval: "the bot asks for the name of the business"
-
-  - user: "The business is called Billboard Source Voice Eval."
-    expect:
-      - event: function_call
-        name: collect_advertiser_name
-        args:
-          advertiser_name: Billboard Source Voice Eval
-      - event: response
-        eval: "the bot asks what city and state the caller is interested in"
-
-  - user: "Detroit, Michigan."
-    expect:
-      - event: function_call
-        name: collect_billboard_location
-        args:
+          full_name: Evaltest Roundrobin
+          business_name: Billboard Source Voice Eval
           billboard_location: Detroit, Michigan
-      - event: response
-        eval: "the bot asks for a good email address"
-
-  - user: "My email is voice eval at example dot com."
-    expect:
-      - event: response
-        eval: "the bot repeats or spells voiceeval@example.com and asks the caller to confirm it"
-
-  - user: "Yes, that email address is correct."
-    expect:
-      - event: function_call
-        name: collect_email
-        args:
           email: voiceeval@example.com
-      - event: response
-        eval: "the bot asks for the best phone number to reach the caller"
-
-  - user: "Use 313-555-0142."
-    expect:
-      - event: response
-        eval: "the bot repeats the phone number digit by digit and asks the caller to confirm it"
-
-  - user: "Yes, that phone number is correct."
-    expect:
-      - event: function_call
-        name: collect_phone
-      - event: response
-        eval: "the bot says it almost forgot and asks for the caller's last name"
-
-  - user: "My last name is Roundrobin."
-    expect:
-      - event: function_call
-        calls:
-          - name: collect_last_name
-            args:
-              last_name: Roundrobin
-          - name: save_call_summary
-      - event: response
-        eval: "the bot identifies the specific associate assigned by Nutshell, provides that associate's email address, says the associate will reach out soon, and ends without describing a transfer or asking another question"
+          phone: 313-555-0142

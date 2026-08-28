@@ -1,4 +1,4 @@
-name: property_inquiry_referral
+name: property_sign_company_guidance
 
 judge:
   eval:
@@ -6,24 +6,11 @@ judge:
     model: gpt-4o-mini
 
 turns:
-  - expect:
-      - event: response
-        text_contains: "Billboard Sales, how can I help you?"
-
-  - user: "I have a question about a billboard property."
+  - user: "Yes, I want to build a billboard on my property."
+    send_after:
+      delay_ms: 8000
     expect:
       - event: function_call
         name: collect_inquiry_type
         args:
           inquiry_type: property
-      - event: response
-        eval: "the bot explains that Billboard Source only handles advertising requests and asks which billboard company the caller is trying to reach"
-
-  - user: "I am trying to reach Lamar Advertising."
-    expect:
-      - event: function_call
-        name: collect_property_company
-        args:
-          company_name: Lamar Advertising
-      - event: response
-        eval: "the bot directs the caller to find Lamar Advertising's accurate local number in Google Maps, says thanks for calling Billboard Source and goodbye, and does not ask if they have other questions"

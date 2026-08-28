@@ -8,9 +8,8 @@ SCENARIO="$PWD/scenarios/property_inquiry.yml" ./dev-eval.sh --verbose
 
 Scenarios:
 
-- `inquire_question.yml` verifies clarification of an ambiguous request.
-- `property_inquiry.yml` verifies property routing and company collection.
-- `advertising_declined.yml` verifies consent and the declined path.
+- `inquire_question.yml` verifies routing after the initial property question.
+- `property_inquiry.yml` verifies property routing to local sign-company guidance.
 - `advertising_lead_assignment.yml` verifies the complete lead-capture flow and
   Nutshell round-robin assignment.
 

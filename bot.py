@@ -1,3 +1,4 @@
+import asyncio
 import os
 from typing import Any, cast
 
@@ -93,10 +94,10 @@ async def run_bot(
     tts = OpenAITTSService(
             api_key = api_key,
             settings = OpenAITTSService.Settings(
-                model = "tts-1-hd",
-                voice = "alloy",
+                model = "gpt-4o-mini-tts",
+                voice = "marin",
                 instructions = instructions,
-                speed = 1.10,
+                speed = 1.15,
                 ),
             )
 
@@ -146,11 +147,13 @@ async def run_bot(
         write_audit_event("call_connected")
 
         call_sid = runner_args.call_data.call_id if runner_args.call_data else None
-        call_info = await get_call_info(call_sid)
-        if call_info and call_info.from_number:
-            flow_manager.state["phone"] = call_info.from_number
+        call_info_task = asyncio.create_task(get_call_info(call_sid))
 
         await flow_manager.initialize(create_initial_node())
+
+        call_info = await call_info_task
+        if call_info and call_info.from_number:
+            flow_manager.state["calling_phone"] = call_info.from_number
 
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(transport, client) -> None:
