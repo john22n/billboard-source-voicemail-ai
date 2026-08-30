@@ -31,6 +31,78 @@ runner arguments when needed:
 PORT=8000 ./dev-twilio.sh --verbose
 ```
 
+## Deploy to a VPS with Docker and Jaeger
+
+This repository includes a deployable app image and a Compose stack for the
+voicemail app and Jaeger. The app and Jaeger UI bind only to the VPS loopback
+interface. Put a TLS reverse proxy in front of the app; Twilio requires public
+HTTPS and a long-lived secure WebSocket connection.
+
+1. Point a DNS hostname at the VPS and open inbound ports 80 and 443.
+2. Copy the environment template, fill in all credentials, and protect it:
+
+   ```bash
+   cp .env.example .env
+   chmod 600 .env
+   ```
+
+   Set `PUBLIC_HOST` to the bare hostname, such as `voicemail.example.com`.
+   Set `NUTSHELL_LEAD_SUBMISSION_ENABLED=true` only when production calls
+   should create Nutshell leads.
+
+3. Start the app and Jaeger:
+
+   ```bash
+   docker compose up -d --build
+   docker compose ps
+   curl http://127.0.0.1:7860/status
+   ```
+
+4. Install Nginx and Certbot on Ubuntu, then enable the included site. Replace
+   `voicemail.example.com` in the copied file with the same hostname used for
+   `PUBLIC_HOST`:
+
+   ```bash
+   sudo apt update
+   sudo apt install -y nginx certbot python3-certbot-nginx
+   sudo cp deploy/nginx/voicemail-agent.conf \
+       /etc/nginx/sites-available/voicemail-agent
+   sudo editor /etc/nginx/sites-available/voicemail-agent
+   sudo ln -s /etc/nginx/sites-available/voicemail-agent \
+       /etc/nginx/sites-enabled/voicemail-agent
+   sudo ufw allow 'Nginx Full'
+   sudo nginx -t
+   sudo systemctl reload nginx
+   sudo certbot --nginx --redirect -d voicemail.example.com
+   ```
+
+   The Nginx configuration forwards WebSocket upgrades, gives calls a one-hour
+   idle timeout, and exposes only Twilio's `POST /` webhook and `/ws` media
+   stream. Port 7860 remains reachable only from the VPS itself.
+
+5. In the Twilio Console, configure the phone number's **A call comes in**
+   voice webhook as `https://voicemail.example.com/` with method `POST`.
+   Pipecat responds with TwiML that connects the call to
+   `wss://voicemail.example.com/ws`.
+
+Tracing is enabled by `ENABLE_TRACING=true`. The app exports OTLP over gRPC to
+the Compose `jaeger` service, and traces appear under the `voicemail-agent`
+service. The Jaeger UI is intentionally not public; access it through SSH:
+
+```bash
+ssh -L 16686:127.0.0.1:16686 user@your-vps
+```
+
+Then open <http://localhost:16686>. This single-container Jaeger setup keeps
+traces in memory, so traces are lost when Jaeger restarts. Treat traces as
+potentially sensitive call data and do not expose the UI publicly.
+
+The container currently uses Pipecat's development runner because it owns the
+Twilio `POST /` and `/ws` dispatch flow. This is appropriate for a low-volume,
+single-VPS deployment, but it is not horizontally scalable and does not provide
+Twilio signature validation or admission control. Keep the reverse proxy in
+front of it and move to a production dispatcher before increasing traffic.
+
 ## Neon billboard locations
 
 Set the project-scoped Neon API key in your environment:

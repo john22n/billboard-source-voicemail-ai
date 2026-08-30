@@ -1,0 +1,14 @@
+.git
+.github
+.venv
+.env
+.env.*
+!.env.example
+.ruff_cache
+__pycache__
+*.py[cod]
+*.log
+logs
+tests
+scenarios
+dev-*.sh

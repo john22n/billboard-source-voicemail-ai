@@ -1,0 +1,27 @@
+services:
+  voicemail:
+    build: .
+    restart: unless-stopped
+    init: true
+    env_file: .env
+    environment:
+      PUBLIC_HOST: ${PUBLIC_HOST:?Set PUBLIC_HOST in .env}
+      ENABLE_TRACING: ${ENABLE_TRACING:-true}
+      ENVIRONMENT: ${ENVIRONMENT:-production}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
+      OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-voicemail-agent}
+    depends_on:
+      - jaeger
+    ports:
+      - "127.0.0.1:7860:7860"
+    volumes:
+      - voicemail-logs:/app/logs
+
+  jaeger:
+    image: cr.jaegertracing.io/jaegertracing/jaeger:2.20.0
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:16686:16686"
+
+volumes:
+  voicemail-logs:
