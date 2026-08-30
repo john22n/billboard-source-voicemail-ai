@@ -34,7 +34,15 @@ from src.system_prompts.voicemail import initial_message
 
 load_dotenv(override=True)
 
-IS_TRACING_ENABLED = bool(os.getenv("ENABLE_TRACING"));
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().casefold() in {"1", "true", "yes", "on"}
+
+
+IS_TRACING_ENABLED = _env_flag("ENABLE_TRACING")
 
 if IS_TRACING_ENABLED:
     otlp_exporter = OTLPSpanExporter(
@@ -43,9 +51,9 @@ if IS_TRACING_ENABLED:
             )
 
     setup_tracing(
-            service_name="BSIAI_voicemail-agent",
+            service_name=os.getenv("OTEL_SERVICE_NAME", "voicemail-agent"),
             exporter=otlp_exporter,
-            console_export=bool(os.getenv("OTEL_CONSOLE_EXPORT")),
+            console_export=_env_flag("OTEL_CONSOLE_EXPORT"),
             )
     logger.info("OpenTelemetry tracing initialized")
 
@@ -135,6 +143,7 @@ async def run_bot(
                 enable_usage_metrics = True,
                 ),
             enable_tracing=IS_TRACING_ENABLED,
+            enable_turn_tracking=IS_TRACING_ENABLED,
             idle_timeout_secs = runner_args.pipeline_idle_timeout_secs,
             )
 

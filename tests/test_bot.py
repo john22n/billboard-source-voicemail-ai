@@ -8,10 +8,31 @@ import bot
 
 
 class BotStartupTests(unittest.TestCase):
-    def test_run_bot_requires_openai_api_key(self) -> None:
+    def test_env_flag_parses_explicit_boolean_values(self) -> None:
+        for value in ("1", "true", "TRUE", "yes", "on"):
+            with self.subTest(value=value), patch.dict(
+                os.environ,
+                {"TEST_FLAG": value},
+            ):
+                self.assertTrue(bot._env_flag("TEST_FLAG"))
+
+        for value in ("0", "false", "FALSE", "no", "off", ""):
+            with self.subTest(value=value), patch.dict(
+                os.environ,
+                {"TEST_FLAG": value},
+            ):
+                self.assertFalse(bot._env_flag("TEST_FLAG"))
+
         with patch.dict(os.environ, {}, clear=True):
-            with self.assertRaisesRegex(RuntimeError, "OPENAI_API_KEY is required"):
-                asyncio.run(bot.run_bot(transport=None, runner_args=None))
+            self.assertFalse(bot._env_flag("TEST_FLAG"))
+            self.assertTrue(bot._env_flag("TEST_FLAG", default=True))
+
+    def test_run_bot_requires_openai_api_key(self) -> None:
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            self.assertRaisesRegex(RuntimeError, "OPENAI_API_KEY is required"),
+        ):
+            asyncio.run(bot.run_bot(transport=None, runner_args=None))
 
     def test_openai_stt_owns_turn_detection_for_short_responses(self) -> None:
         captured_stt = {}
