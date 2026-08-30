@@ -13,6 +13,66 @@ class BotStartupTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "OPENAI_API_KEY is required"):
                 asyncio.run(bot.run_bot(transport=None, runner_args=None))
 
+    def test_openai_stt_owns_turn_detection_for_short_responses(self) -> None:
+        captured_stt = {}
+        captured_aggregator = {}
+
+        class PipelineConfigured(Exception):
+            pass
+
+        class FakeOpenAIRealtimeSTTService:
+            Settings = bot.OpenAIRealtimeSTTService.Settings
+
+            def __init__(self, **kwargs: object) -> None:
+                captured_stt.update(kwargs)
+
+        def capture_aggregator(*_: object, **kwargs: object) -> None:
+            captured_aggregator.update(kwargs)
+            raise PipelineConfigured
+
+        with (
+            patch.dict(os.environ, {"OPENAI_API_KEY": "test"}),
+            patch.object(
+                bot,
+                "OpenAIRealtimeSTTService",
+                FakeOpenAIRealtimeSTTService,
+            ),
+            patch.object(
+                bot,
+                "LLMContextAggregatorPair",
+                side_effect=capture_aggregator,
+            ),
+            self.assertRaises(PipelineConfigured),
+        ):
+            asyncio.run(bot.run_bot(transport=None, runner_args=None))
+
+        self.assertEqual(captured_stt["turn_detection"], {"type": "server_vad"})
+        self.assertEqual(captured_stt["settings"].model, "gpt-4o-transcribe")
+        self.assertNotIn("user_params", captured_aggregator)
+
+    def test_luna_disables_reasoning_for_function_tools(self) -> None:
+        captured_settings = []
+
+        class LLMCreated(Exception):
+            pass
+
+        class FakeOpenAILLMService:
+            Settings = bot.OpenAILLMService.Settings
+
+            def __init__(self, *, settings: object, **_: object) -> None:
+                captured_settings.append(settings)
+                raise LLMCreated
+
+        with (
+            patch.dict(os.environ, {"OPENAI_API_KEY": "test"}),
+            patch.object(bot, "OpenAIRealtimeSTTService"),
+            patch.object(bot, "OpenAILLMService", FakeOpenAILLMService),
+            self.assertRaises(LLMCreated),
+        ):
+            asyncio.run(bot.run_bot(transport=None, runner_args=None))
+
+        self.assertEqual(captured_settings[0].extra["reasoning_effort"], "none")
+
     def test_finalize_call_logs_completion_before_submitting_lead(self) -> None:
         events = []
         submit = AsyncMock(side_effect=lambda *_: events.append("nutshell"))

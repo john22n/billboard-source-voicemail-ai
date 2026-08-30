@@ -10,8 +10,8 @@ from src.data_source.nutshell import (
     _add_phone_to_contact,
     _find_or_create_account,
     _find_or_create_contact,
+    _get_round_robin_assignee,
     _nutshell_request,
-    _resolve_assignee_id,
     create_nutshell_lead,
 )
 from src.models.sales_call_lead import LeadInformation
@@ -54,30 +54,43 @@ class NutshellTests(unittest.TestCase):
 
         session.request.assert_called_once()
 
-    def test_one_in_three_assignment_resolves_alternate_user(self) -> None:
-        users = {
-            "users": [
-                {"id": "3-users", "emails": ["default@example.com"]},
-                {"id": "35-users", "emails": ["alternate@example.com"]},
+    def test_round_robin_assignee_is_read_from_created_lead_owner(self) -> None:
+        request = AsyncMock(
+            side_effect=[
+                {"leads": [{"id": "6-leads", "links": {"owner": "35-users"}}]},
+                {
+                    "users": [
+                        {
+                            "id": "35-users",
+                            "firstName": "Alex",
+                            "name": "Alex Manager",
+                            "emails": ["alex@example.com"],
+                        }
+                    ]
+                },
             ]
-        }
-        with (
-            patch.dict(
-                os.environ,
-                {"NUTSHELL_ALTERNATE_ASSIGNEE_EMAIL": "alternate@example.com"},
-                clear=True,
-            ),
-            patch("src.data_source.nutshell.random.randrange", return_value=0),
-            patch(
-                "src.data_source.nutshell._nutshell_request",
-                new=AsyncMock(return_value=users),
-            ),
-        ):
-            user_id = asyncio.run(
-                _resolve_assignee_id(MagicMock(), {}, "default@example.com")
+        )
+
+        with patch("src.data_source.nutshell._nutshell_request", new=request):
+            assignee = asyncio.run(
+                _get_round_robin_assignee(MagicMock(), {}, "6-leads")
             )
 
-        self.assertEqual(user_id, "35-users")
+        self.assertEqual(
+            assignee,
+            {
+                "id": "35-users",
+                "name": "Alex",
+                "email": "alex@example.com",
+            },
+        )
+        self.assertEqual(
+            request.await_args_list,
+            [
+                call(ANY, "GET", "leads/6-leads", {}),
+                call(ANY, "GET", "users/35-users", {}),
+            ],
+        )
 
     def test_account_lookup_does_not_send_commas_in_name_filter(self) -> None:
         request = AsyncMock(
@@ -194,7 +207,6 @@ class NutshellTests(unittest.TestCase):
 
     def test_lead_information_maps_to_rest_resources(self) -> None:
         results = [
-            {"users": [{"id": "3-users", "emails": ["agent@example.com"]}]},
             {"accounts": []},
             {"accounts": [{"id": "1-accounts"}]},
             {"contacts": []},
@@ -208,6 +220,16 @@ class NutshellTests(unittest.TestCase):
             {"sources": [{"id": "5-sources"}]},
             {"leads": [{"id": "6-leads", "description": "Example Company"}]},
             {"id": "3-stagesets"},
+            {"leads": [{"id": "6-leads", "links": {"owner": "3-users"}}]},
+            {
+                "users": [
+                    {
+                        "id": "3-users",
+                        "firstName": "Alex",
+                        "emails": ["agent@example.com"],
+                    }
+                ]
+            },
             {"id": "8-notes"},
         ]
         session = MagicMock()
@@ -237,7 +259,6 @@ class NutshellTests(unittest.TestCase):
                 "src.data_source.nutshell._nutshell_request",
                 new=AsyncMock(side_effect=results),
             ) as request,
-            patch("src.data_source.nutshell.random.randrange", return_value=1),
         ):
             result = asyncio.run(create_nutshell_lead(lead))
 
@@ -251,7 +272,6 @@ class NutshellTests(unittest.TestCase):
         self.assertEqual(
             request.call_args_list,
             [
-                call(ANY, "GET", "users", headers),
                 call(
                     ANY,
                     "GET",
@@ -324,7 +344,6 @@ class NutshellTests(unittest.TestCase):
                             {
                                 "description": "Example Company",
                                 "links": {
-                                    "owner": "3-users",
                                     "sources": ["5-sources"],
                                     "accounts": ["1-accounts"],
                                     "contacts": ["2-contacts"],
@@ -344,6 +363,8 @@ class NutshellTests(unittest.TestCase):
                     headers,
                     payload={"stageset": "3-stagesets"},
                 ),
+                call(ANY, "GET", "leads/6-leads", headers),
+                call(ANY, "GET", "users/3-users", headers),
                 call(
                     ANY,
                     "POST",
@@ -363,7 +384,15 @@ class NutshellTests(unittest.TestCase):
         )
         self.assertEqual(
             result,
-            {"id": "6-leads", "description": "Example Company"},
+            {
+                "id": "6-leads",
+                "description": "Example Company",
+                "assignee": {
+                    "id": "3-users",
+                    "name": "Alex",
+                    "email": "agent@example.com",
+                },
+            },
         )
 
 

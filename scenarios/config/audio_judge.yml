@@ -1,0 +1,6 @@
+modality: audio
+transcription:
+  service: moonshine
+eval:
+  service: openai
+  model: gpt-4o-mini

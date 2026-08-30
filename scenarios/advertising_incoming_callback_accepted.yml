@@ -1,0 +1,43 @@
+# Run with incoming_call.json so the eval bot has a simulated Twilio caller number.
+# Local eval sessions do not submit the collected lead to Nutshell.
+name: advertising_incoming_callback_accepted
+
+judge: !include config/audio_judge.yml
+
+turns:
+  - expect: !include config/opening_expectations.yml
+
+  - user: "I want to advertise my business."
+    expect:
+      - event: function_call
+        name: collect_inquiry_type
+        args:
+          inquiry_type: advertising
+      - event: tts_response
+        text_contains: "Billboard Source can help. All our leasing managers are busy"
+
+  - user: "My name is Evaltest Incomingaccepted. Call me back at this number. My email is voiceeval+accepted@example.com."
+    expect:
+      - event: tts_response
+        eval: "the bot asks only for the missing business name without asking again for the caller's name, email, or callback number"
+
+  - user: "My business is Voice Eval Incoming Accepted."
+    expect:
+      - event: function_call
+        name: collect_business_lead
+        args:
+          full_name: Evaltest Incomingaccepted
+          business_name: Voice Eval Incoming Accepted
+          email: voiceeval+accepted@example.com
+          phone: this number
+      - event: tts_response
+        text_contains: "Is the number you are calling from a good callback number?"
+
+  - user: "Yes, it is."
+    expect:
+      - event: function_call
+        name: confirm_callback_number
+        args:
+          is_good_callback: true
+      - event: tts_response
+        eval: "the bot says a Billboard Source associate will contact the caller soon, thanks the caller, and says goodbye without asking another question"

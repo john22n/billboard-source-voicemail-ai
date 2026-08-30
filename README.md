@@ -48,13 +48,20 @@ ignored by Git; use `.env.example` as the safe configuration template.
 
 ## Nutshell leads
 
-Set the Nutshell user's email address and API key in your environment:
+Set the Nutshell user's email address, API key, and production submission flag in
+the deployed environment:
 
 ```dotenv
 NUTSHELL_EMAIL=user@example.com
 NUTSHELL_API_KEY=your-api-key
-NUTSHELL_ALTERNATE_ASSIGNEE_EMAIL=alternate@example.com
+NUTSHELL_LEAD_SUBMISSION_ENABLED=true
 ```
+
+Local eval and WebRTC sessions never submit leads. `dev-eval.sh` and
+`dev-twilio.sh` also disable submission, and `.env.example` defaults the flag to
+`false`, so testing locally cannot write test leads to Nutshell. When submission
+is disabled, the call still completes normally with a generic associate
+follow-up message.
 
 Create one lead through the Nutshell REST API:
 
@@ -74,6 +81,8 @@ lead = await create_nutshell_lead(
 )
 ```
 
-When `NUTSHELL_ALTERNATE_ASSIGNEE_EMAIL` is configured, each lead has a
-one-in-three chance of being assigned to that user. Remaining leads are assigned
-to the user configured by `NUTSHELL_EMAIL`.
+Voice leads are created without an owner and placed in the `NEW BSI Pipeline`, so
+Nutshell's user-assignment rules select the owner. Configure that pipeline's first
+stage with a team and enable **Round-robin**. The agent reads the assigned user's
+first name and email from Nutshell, tells the caller who will follow up, and ends
+the call. It does not transfer or hand off the call.

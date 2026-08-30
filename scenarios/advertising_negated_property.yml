@@ -1,0 +1,15 @@
+name: negated_property_routes_to_advertising
+
+judge: !include config/audio_judge.yml
+
+turns:
+  - expect: !include config/opening_expectations.yml
+
+  - user: "No, I do not want to build on my property. I want to advertise a community event."
+    expect:
+      - event: function_call
+        name: collect_inquiry_type
+        args:
+          inquiry_type: advertising
+      - event: tts_response
+        text_contains: "Billboard Source can help. All our leasing managers are busy"

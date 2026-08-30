@@ -14,3 +14,5 @@ wheels/
 
 # Local runtime logs
 logs/
+
+*.log

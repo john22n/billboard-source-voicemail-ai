@@ -1,267 +1,397 @@
-from typing import Any, TypedDict
+from typing import Literal, TypedDict
 
-from loguru import logger
 from pipecat.flows import FlowManager, NodeConfig
 
-from src.data_source.neon import get_location_pricing
-from src.flows.tools import write_audit_event
+from src.flows.tools import submit_nutshell_lead, write_audit_event
 from src.system_prompts.voicemail import initial_message
 
 
-class NameCollectionResult(TypedDict):
-    name: str
+class CollectionResult(TypedDict):
+    value: str
 
 
-class BusinessCollectionResult(TypedDict):
-    business_name: str
-
-
-class BillboardLocationCollectionResult(TypedDict):
-    billboard_location: str
-    pricing_found: bool
-
-
-class EmailCollectionResult(TypedDict):
-    email: str
-
-
-class CallSummaryResult(TypedDict):
-    summary: str
-
-
-async def collect_name(
+async def collect_inquiry_type(
     flow_manager: FlowManager,
-    name: str,
-) -> tuple[NameCollectionResult, NodeConfig]:
-    """Record the caller's full name.
+    inquiry_type: Literal["advertising", "property"],
+) -> tuple[CollectionResult, NodeConfig]:
+    """Route the caller based on the purpose of their call.
 
     Args:
-        name: The caller's full name.
+        inquiry_type: Use property only when the caller affirmatively wants to build
+            a billboard on property they own. Use advertising when the caller wants
+            to advertise a business, campaign, product, service, or message.
     """
-    logger.debug("Collected caller name")
-    flow_manager.state["name"] = name
-    write_audit_event("flow_step_completed", step="name")
-    return NameCollectionResult(name=name), create_business_node()
-
-
-async def collect_business_info(
-    flow_manager: FlowManager,
-    business_name: str,
-) -> tuple[BusinessCollectionResult, NodeConfig]:
-    """Record the caller's business name and type.
-
-    Args:
-        business_name: The name and type of business being advertised.
-    """
-    logger.debug("Collected caller business")
-    flow_manager.state["business_name"] = business_name
-    write_audit_event("flow_step_completed", step="business")
-    return (
-        BusinessCollectionResult(business_name=business_name),
-        create_billboard_location_node(),
+    normalized_type = (
+        "property"
+        if inquiry_type.strip().casefold() in {"property", "property question"}
+        else "advertising"
     )
-
-
-async def collect_billboard_location(
-    flow_manager: FlowManager,
-    billboard_location: str,
-) -> tuple[BillboardLocationCollectionResult, NodeConfig]:
-    """Record the desired billboard location and look up its pricing.
-
-    Args:
-        billboard_location: The city, state, county, or market where the caller
-            wants to advertise.
-    """
-    logger.debug("Collected billboard location")
-    flow_manager.state["billboard_location"] = billboard_location
-    write_audit_event("flow_step_completed", step="location")
-    try:
-        pricing = await get_location_pricing(billboard_location)
-    except Exception as error:
-        write_audit_event(
-            "pricing_lookup_failed",
-            error_type=type(error).__name__,
-            http_status=getattr(error, "status", None),
-        )
-        logger.exception("Failed to look up billboard pricing")
-        pricing = None
-
-    result = BillboardLocationCollectionResult(
-        billboard_location=billboard_location,
-        pricing_found=pricing is not None,
+    flow_manager.state["inquiry_type"] = normalized_type
+    write_audit_event(
+        "flow_step_completed",
+        step="inquiry_type",
+        inquiry_type=normalized_type,
     )
-    if pricing is None:
-        write_audit_event("pricing_lookup_not_found")
-        return result, create_location_not_found_node(billboard_location)
+    next_node = (
+        create_property_end_node()
+        if normalized_type == "property"
+        else create_business_lead_node()
+    )
+    return CollectionResult(value=normalized_type), next_node
 
-    flow_manager.state["location_pricing"] = pricing
-    write_audit_event("pricing_lookup_succeeded")
-    return result, create_pricing_summary_node(pricing)
 
-
-async def collect_email(
+async def collect_business_lead(
     flow_manager: FlowManager,
+    full_name: str,
     email: str,
-) -> tuple[EmailCollectionResult, NodeConfig]:
-    """Record the email address after the caller confirms its spelling.
+    business_name: str | None = None,
+    phone: str | None = None,
+) -> tuple[CollectionResult, NodeConfig]:
+    """Collect business information and use a supplied callback number when present.
 
     Args:
-        email: The caller's confirmed email address.
+        full_name: The caller's first and last name.
+        email: The caller's email address.
+        business_name: The caller's business name. Omit it when the caller has not
+            provided one; never use a placeholder such as "not provided".
+        phone: The caller's callback phone number, if supplied. Use "this number"
+            when the caller wants a callback at the number they are calling from.
     """
-    logger.debug("Collected caller email")
+    full_name = full_name.strip()
+    business_name = business_name.strip() if business_name else ""
+    if business_name.casefold() in {
+        "n/a",
+        "none",
+        "not given",
+        "not provided",
+        "unknown",
+    }:
+        business_name = ""
+    email = email.strip()
+    flow_manager.state["name"] = full_name
+    flow_manager.state["first_name"] = full_name.split(maxsplit=1)[0]
+    flow_manager.state["advertising_type"] = "business"
+    flow_manager.state["business_name"] = business_name
     flow_manager.state["email"] = email
-    write_audit_event("flow_step_completed", step="email")
-    return EmailCollectionResult(email=email), create_summary_node()
+
+    supplied_phone = phone.strip() if phone else ""
+    if supplied_phone:
+        uses_calling_phone = _uses_calling_phone(supplied_phone)
+        callback_phone = (
+            str(flow_manager.state.get("calling_phone", "")).strip()
+            if uses_calling_phone
+            else supplied_phone
+        )
+        if callback_phone:
+            _stage_callback_phone(
+                flow_manager,
+                callback_phone,
+                uses_calling_phone=uses_calling_phone,
+            )
+
+    if not business_name:
+        return CollectionResult(value=full_name), create_business_lead_node(
+            request_business_name_only=True
+        )
+
+    write_audit_event("flow_step_completed", step="business_information")
+
+    pending_phone = str(
+        flow_manager.state.get("pending_callback_phone", "")
+    ).strip()
+    if not pending_phone:
+        calling_phone = str(flow_manager.state.get("calling_phone", "")).strip()
+        if calling_phone:
+            _stage_callback_phone(
+                flow_manager,
+                calling_phone,
+                uses_calling_phone=True,
+            )
+            pending_phone = calling_phone
+
+    if pending_phone:
+        return CollectionResult(value=full_name), create_callback_confirmation_node(
+            pending_phone,
+            uses_calling_phone=bool(
+                flow_manager.state.get("pending_callback_uses_calling_phone")
+            ),
+        )
+
+    return CollectionResult(value=full_name), create_callback_number_node()
 
 
-async def save_call_summary(
+async def confirm_callback_number(
     flow_manager: FlowManager,
-    summary: str,
-) -> tuple[CallSummaryResult, NodeConfig]:
-    """Save a concise CRM summary generated from the completed call.
+    is_good_callback: bool,
+) -> tuple[CollectionResult, NodeConfig]:
+    """Confirm whether the staged phone number is suitable for callbacks.
 
     Args:
-        summary: A factual summary of the caller's request, collected contact
-            details, pricing discussed, and required follow-up.
+        is_good_callback: True if the number just presented is a good callback.
     """
-    flow_manager.state["call_summary"] = summary
-    write_audit_event("flow_step_completed", step="summary")
-    return CallSummaryResult(summary=summary), create_end_node()
+    if not is_good_callback:
+        flow_manager.state.pop("pending_callback_phone", None)
+        flow_manager.state.pop("pending_callback_uses_calling_phone", None)
+        return CollectionResult(value="no"), create_callback_number_node()
+
+    pending_phone = str(
+        flow_manager.state.get("pending_callback_phone", "")
+    ).strip()
+    if not pending_phone:
+        return CollectionResult(value="yes"), create_callback_number_node()
+
+    next_node = await _submit_business_lead(
+        flow_manager,
+        pending_phone,
+    )
+    flow_manager.state.pop("pending_callback_phone", None)
+    flow_manager.state.pop("pending_callback_uses_calling_phone", None)
+    return CollectionResult(value="yes"), next_node
+
+
+async def collect_callback_number(
+    flow_manager: FlowManager,
+    phone: str,
+) -> tuple[CollectionResult, NodeConfig]:
+    """Collect a callback number and ask the caller to confirm it.
+
+    Args:
+        phone: The caller's preferred callback phone number.
+    """
+    phone = phone.strip()
+    if not phone:
+        return CollectionResult(value=phone), create_callback_number_node()
+
+    _stage_callback_phone(
+        flow_manager,
+        phone,
+        uses_calling_phone=False,
+    )
+    return CollectionResult(value=phone), create_callback_confirmation_node(
+        phone,
+        uses_calling_phone=False,
+    )
+
+
+def _uses_calling_phone(phone: str) -> bool:
+    normalized = phone.casefold().replace("’", "'").rstrip(" .!?")
+    return normalized in {
+        "this number",
+        "this phone number",
+        "the number i'm calling from",
+        "the number i am calling from",
+    }
+
+
+def _stage_callback_phone(
+    flow_manager: FlowManager,
+    phone: str,
+    *,
+    uses_calling_phone: bool,
+) -> None:
+    flow_manager.state["pending_callback_phone"] = phone
+    flow_manager.state["pending_callback_uses_calling_phone"] = uses_calling_phone
+
+
+async def _submit_business_lead(
+    flow_manager: FlowManager,
+    phone: str,
+) -> NodeConfig:
+    calling_phone = str(flow_manager.state.get("calling_phone", "")).strip()
+    flow_manager.state["phone"] = phone
+    flow_manager.state["call_summary"] = (
+        f"{flow_manager.state['name']} from {flow_manager.state['business_name']} "
+        "wants billboard advertising. "
+        f"Contact: {flow_manager.state['email']}, {phone}."
+        + (f" Twilio caller number: {calling_phone}." if calling_phone else "")
+    )
+    write_audit_event("flow_step_completed", step="callback_phone")
+
+    created_lead = await submit_nutshell_lead({}, flow_manager)
+    assignee = created_lead.get("assignee", {}) if created_lead else {}
+    selected_name = assignee.get("name") if isinstance(assignee, dict) else None
+    selected_email = assignee.get("email") if isinstance(assignee, dict) else None
+    associate_name = selected_name if isinstance(selected_name, str) else None
+    associate_email = selected_email if isinstance(selected_email, str) else None
+    flow_manager.state["associate_name"] = associate_name
+    flow_manager.state["associate_email"] = associate_email
+    return create_associate_followup_node(
+        associate_name,
+        associate_email,
+    )
 
 
 def create_initial_node() -> NodeConfig:
     return NodeConfig(
-        name="initial",
+        name="start",
         role_message=initial_message,
+        pre_actions=[
+            {
+                "type": "tts_say",
+                "text": (
+                    "Thanks for calling Billboard Source, how can I help you? "
+                    "Are you looking to build a billboard on your property or "
+                    "advertise your business?"
+                ),
+            }
+        ],
         task_messages=[
             {
                 "role": "developer",
                 "content": (
-                    "Say: Hello, this is Billboard Source. Our team is away, "
-                    "but I can collect some information and have someone get "
-                    "back to you. May I have your full name? After the caller "
-                    "answers, you must immediately call collect_name with their "
-                    "answer. Do not continue the conversation without calling it."
+                    "ask if they are calling about a billboard on thier property or if they want to advertise their business, route them correcly to the next step based their response"
                 ),
             }
         ],
-        functions=[collect_name],
+        functions=[collect_inquiry_type],
+        respond_immediately=False,
     )
 
 
-def create_business_node() -> NodeConfig:
+def create_property_end_node() -> NodeConfig:
     return NodeConfig(
-        name="business_name",
-        task_messages=[
+        name="property_end",
+        task_messages=[],
+        pre_actions=[
             {
-                "role": "developer",
-                "content": (
-                    "Ask for the name and type of business the caller wants "
-                    "to advertise. After the caller answers, you must immediately "
-                    "call collect_business_info with their answer. Do not ask the "
-                    "next question yourself."
+                "type": "tts_say",
+                "text": (
+                    "Please Google a local sign company. Billboard Source helps "
+                    "clients find billboards to advertise on. Thanks for calling, "
+                    "goodbye."
                 ),
-            }
-        ],
-        functions=[collect_business_info],
-    )
-
-
-def create_billboard_location_node() -> NodeConfig:
-    return NodeConfig(
-        name="billboard_location",
-        task_messages=[
-            {
-                "role": "developer",
-                "content": (
-                    "Ask where the caller wants to advertise. Request a city, "
-                    "state, county, or market such as Denver, Colorado or DFW. "
-                    "After the caller answers, you must immediately call "
-                    "collect_billboard_location with their answer."
-                ),
-            }
-        ],
-        functions=[collect_billboard_location],
-    )
-
-
-def create_location_not_found_node(requested_location: str) -> NodeConfig:
-    return NodeConfig(
-        name="location_not_found",
-        task_messages=[
-            {
-                "role": "developer",
-                "content": (
-                    f"No pricing was found for {requested_location}. Explain "
-                    "that a representative can research it, then ask for the "
-                    "caller's email address. Repeat the address character by "
-                    "character and get confirmation. Once confirmed, you must "
-                    "immediately call collect_email with the confirmed address."
-                ),
-            }
-        ],
-        functions=[collect_email],
-    )
-
-
-def create_pricing_summary_node(pricing: dict[str, Any]) -> NodeConfig:
-    location = ", ".join(
-        value for value in (pricing.get("city"), pricing.get("state")) if value
-    )
-    return NodeConfig(
-        name="pricing_summary",
-        task_messages=[
-            {
-                "role": "developer",
-                "content": (
-                    f"Give this general estimate for {location}: average daily "
-                    f"views are {pricing.get('avg_daily_views', 'unavailable')} "
-                    f"and the four-week range is "
-                    f"{pricing.get('four_week_range', 'unavailable')}. Explain "
-                    "that final pricing depends on availability. Then ask for "
-                    "the caller's email address. Repeat it character by character "
-                    "and get confirmation. Once confirmed, you must immediately "
-                    "call collect_email with the confirmed address."
-                ),
-            }
-        ],
-        functions=[collect_email],
-    )
-
-
-def create_summary_node() -> NodeConfig:
-    return NodeConfig(
-        name="summarize_call",
-        task_messages=[
-            {
-                "role": "developer",
-                "content": (
-                    "Silently review the conversation and generate a concise, "
-                    "factual CRM summary. Include the caller's request, business, "
-                    "target billboard location, pricing discussed, confirmed "
-                    "contact details, and follow-up needed. Do not invent missing "
-                    "details and do not read the summary aloud. Immediately call "
-                    "save_call_summary with the summary."
-                ),
-            }
-        ],
-        functions=[save_call_summary],
-    )
-
-
-def create_end_node() -> NodeConfig:
-    return NodeConfig(
-        name="end",
-        task_messages=[
-            {
-                "role": "developer",
-                "content": (
-                    "Thank the caller and say that a Billboard Source "
-                    "representative will follow up within one business day."
-                ),
-            }
-        ],
-        post_actions=[
+            },
             {"type": "end_conversation"},
         ],
+        respond_immediately=False,
+    )
+
+
+def create_business_lead_node(
+    *,
+    request_business_name_only: bool = False,
+) -> NodeConfig:
+    if request_business_name_only:
+        request_text = "What is the name of your business?"
+        task_content = (
+            "Wait for the caller to provide their business name, then immediately "
+            "call collect_business_lead using it with the previously provided full "
+            "name, email address, and optional callback preference. The business "
+            "name must not be blank."
+        )
+    else:
+        request_text = (
+            "Billboard Source can help. All our leasing managers are busy, "
+            "so please leave your full name, business information, and "
+            "contact info."
+        )
+        task_content = (
+            "Wait for the caller to provide their full name, business name, "
+            "and email address. If they also provide a callback phone "
+            "number, include it; otherwise omit phone. If they ask to be called "
+            'back at this number, pass phone as "this number". '
+            "Accept the information as provided without repeating or "
+            "confirming it. If anything is missing, ask only for all missing "
+            "required information in one request. Once those three required "
+            "details are available, immediately call collect_business_lead."
+        )
+
+    return NodeConfig(
+        name="business_lead",
+        pre_actions=[
+            {
+                "type": "tts_say",
+                "text": request_text,
+            }
+        ],
+        task_messages=[
+            {
+                "role": "developer",
+                "content": task_content,
+            }
+        ],
+        functions=[collect_business_lead],
+        respond_immediately=False,
+    )
+
+
+def create_callback_confirmation_node(
+    phone: str,
+    *,
+    uses_calling_phone: bool,
+) -> NodeConfig:
+    question = (
+        "Is the number you are calling from a good callback number?"
+        if uses_calling_phone
+        else f"Is {phone} the correct callback number?"
+    )
+    return NodeConfig(
+        name="confirm_callback_number",
+        pre_actions=[
+            {
+                "type": "tts_say",
+                "text": question,
+            }
+        ],
+        task_messages=[
+            {
+                "role": "developer",
+                "content": (
+                    "Immediately call confirm_callback_number with the caller's "
+                    "yes or no answer."
+                ),
+            }
+        ],
+        functions=[confirm_callback_number],
+        respond_immediately=False,
+    )
+
+
+def create_callback_number_node() -> NodeConfig:
+    return NodeConfig(
+        name="callback_number",
+        pre_actions=[
+            {
+                "type": "tts_say",
+                "text": "What is your best callback phone number?",
+            }
+        ],
+        task_messages=[
+            {
+                "role": "developer",
+                "content": (
+                    "Immediately call collect_callback_number after the caller "
+                    "provides their callback phone number."
+                ),
+            }
+        ],
+        functions=[collect_callback_number],
+        respond_immediately=False,
+    )
+
+
+def create_associate_followup_node(
+    associate_name: str | None,
+    associate_email: str | None,
+) -> NodeConfig:
+    name = associate_name or "A Billboard Source associate"
+    email = (
+        f" Their email address is {associate_email}."
+        if associate_email
+        else ""
+    )
+    return NodeConfig(
+        name="associate_followup",
+        task_messages=[],
+        pre_actions=[
+            {
+                "type": "tts_say",
+                "text": (
+                    f"{name} is assigned to your request and will contact you "
+                    f"soon.{email} Thanks for calling Billboard Source, goodbye."
+                ),
+            },
+            {"type": "end_conversation"},
+        ],
+        respond_immediately=False,
     )

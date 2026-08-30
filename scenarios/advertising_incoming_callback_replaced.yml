@@ -1,0 +1,55 @@
+# Run with incoming_call.json so the eval bot has a simulated Twilio caller number.
+# Local eval sessions do not submit the collected lead to Nutshell.
+name: advertising_incoming_callback_replaced
+
+judge: !include config/audio_judge.yml
+
+turns:
+  - expect: !include config/opening_expectations.yml
+
+  - user: "I want to advertise my business."
+    expect:
+      - event: function_call
+        name: collect_inquiry_type
+        args:
+          inquiry_type: advertising
+      - event: tts_response
+        text_contains: "Billboard Source can help. All our leasing managers are busy"
+
+  - user: "My name is Evaltest Incomingreplaced. My business is Voice Eval Incoming Replaced. My email is voiceeval+replaced@example.com."
+    expect:
+      - event: function_call
+        name: collect_business_lead
+        args:
+          full_name: Evaltest Incomingreplaced
+          business_name: Voice Eval Incoming Replaced
+          email: voiceeval+replaced@example.com
+      - event: tts_response
+        text_contains: "Is the number you are calling from a good callback number?"
+
+  - user: "No, please use a different number."
+    expect:
+      - event: function_call
+        name: confirm_callback_number
+        args:
+          is_good_callback: false
+      - event: tts_response
+        eval: "the bot asks only for the caller's best callback phone number"
+
+  - user: "Use 646-555-0145."
+    expect:
+      - event: function_call
+        name: collect_callback_number
+        args:
+          phone: 646-555-0145
+      - event: tts_response
+        eval: "the bot repeats 646-555-0145 and asks the caller to confirm that it is the correct callback number"
+
+  - user: "Yes, that is correct."
+    expect:
+      - event: function_call
+        name: confirm_callback_number
+        args:
+          is_good_callback: true
+      - event: tts_response
+        eval: "the bot says a Billboard Source associate will contact the caller soon, thanks the caller, and says goodbye without asking another question"

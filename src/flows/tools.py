@@ -76,12 +76,32 @@ def format_call_transcript(context: LLMContext | None) -> str | None:
 async def submit_nutshell_lead(
     action: dict,
     flow_manager: FlowManager,
-) -> None:
+) -> dict[str, Any] | None:
     """Create a Nutshell lead from information collected during the call."""
+    submission_enabled = (
+        flow_manager.state.get("nutshell_submission_enabled", True) is not False
+        and os.getenv("NUTSHELL_LEAD_SUBMISSION_ENABLED", "true")
+        .strip()
+        .casefold()
+        in {"1", "true", "yes", "on"}
+    )
+    if not submission_enabled:
+        write_audit_event(
+            "nutshell_submission_skipped",
+            reason="disabled_by_configuration",
+        )
+        logger.info("Skipped Nutshell lead because submission is disabled")
+        return None
+
+    if flow_manager.state.get("inquiry_type") == "property":
+        write_audit_event("nutshell_submission_skipped", reason="not_advertising_lead")
+        logger.info("Skipped Nutshell lead for a non-advertising call")
+        return None
+
     existing_submission = flow_manager.state.get("nutshell_submission_task")
     if isinstance(existing_submission, asyncio.Task):
         try:
-            await asyncio.shield(existing_submission)
+            return await asyncio.shield(existing_submission)
         except Exception as error:
             if (
                 flow_manager.state.get("nutshell_submission_task")
@@ -99,15 +119,9 @@ async def submit_nutshell_lead(
                 type(error).__name__,
                 getattr(error, "status", None),
             )
-        return
+        return None
 
-    pricing = flow_manager.state.get("location_pricing") or {}
     notes = flow_manager.state.get("call_summary")
-    if not notes and pricing:
-        notes = (
-            f"Pricing discussed: {pricing.get('four_week_range', 'unavailable')}; "
-            f"average daily views: {pricing.get('avg_daily_views', 'unavailable')}."
-        )
 
     context = flow_manager.state.get("llm_context")
     transcript = format_call_transcript(
@@ -117,7 +131,6 @@ async def submit_nutshell_lead(
     lead = LeadInformation(
         name=flow_manager.state.get("name"),
         business=flow_manager.state.get("business_name"),
-        billboard_location=flow_manager.state.get("billboard_location"),
         email=flow_manager.state.get("email"),
         phone=flow_manager.state.get("phone"),
         notes=notes,
@@ -127,14 +140,13 @@ async def submit_nutshell_lead(
     caller_details = (
         lead.name,
         lead.business,
-        lead.billboard_location,
         lead.email,
         lead.phone,
     )
     if not any(value and value.strip() for value in caller_details):
         write_audit_event("nutshell_submission_skipped", reason="no_caller_details")
         logger.info("Skipped Nutshell lead without caller details")
-        return
+        return None
 
     submission = asyncio.create_task(create_nutshell_lead(lead))
     flow_manager.state["nutshell_submission_task"] = submission
@@ -142,7 +154,6 @@ async def submit_nutshell_lead(
         "nutshell_submission_started",
         has_name=bool(lead.name),
         has_business=bool(lead.business),
-        has_location=bool(lead.billboard_location),
         has_email=bool(lead.email),
         has_phone=bool(lead.phone),
         has_summary=bool(lead.notes),
@@ -155,6 +166,7 @@ async def submit_nutshell_lead(
             lead_id=created_lead.get("id"),
         )
         logger.info("Created Nutshell lead {}", created_lead.get("id"))
+        return created_lead
     except Exception as error:
         if flow_manager.state.get("nutshell_submission_task") is submission:
             flow_manager.state.pop("nutshell_submission_task")
@@ -169,3 +181,4 @@ async def submit_nutshell_lead(
             type(error).__name__,
             getattr(error, "status", None),
         )
+        return None

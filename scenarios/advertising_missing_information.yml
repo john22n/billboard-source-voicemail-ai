@@ -1,0 +1,51 @@
+# This scenario exercises incremental data collection and the no-incoming-number
+# callback path without submitting a real Nutshell lead.
+name: advertising_missing_information_and_callback_collection
+
+judge: !include config/audio_judge.yml
+
+turns:
+  - expect: !include config/opening_expectations.yml
+
+  - user: "I want to advertise my business."
+    expect:
+      - event: function_call
+        name: collect_inquiry_type
+        args:
+          inquiry_type: advertising
+      - event: tts_response
+        text_contains: "Billboard Source can help. All our leasing managers are busy"
+
+  - user: "My full name is Evaltest Missingfields and my business is Voice Eval Missing Fields."
+    expect:
+      - event: tts_response
+        eval: "the bot asks only for the missing email address; it does not ask for a location or ask again for the caller's name or business name"
+
+  - user: "My email is voiceeval+missing@example.com."
+    expect:
+      - event: function_call
+        name: collect_business_lead
+        args:
+          full_name: Evaltest Missingfields
+          business_name: Voice Eval Missing Fields
+          email: voiceeval+missing@example.com
+      - event: tts_response
+        eval: "the bot asks only for the caller's best callback phone number"
+
+  - user: "My best callback number is 720-555-0143."
+    expect:
+      - event: function_call
+        name: collect_callback_number
+        args:
+          phone: 720-555-0143
+      - event: tts_response
+        eval: "the bot repeats 720-555-0143 and asks the caller to confirm that it is the correct callback number"
+
+  - user: "Yes, that is correct."
+    expect:
+      - event: function_call
+        name: confirm_callback_number
+        args:
+          is_good_callback: true
+      - event: tts_response
+        eval: "the bot says a Billboard Source associate will contact the caller soon, thanks the caller, and says goodbye without asking another question"
