@@ -14,7 +14,7 @@ The suite starts a fresh bot for each scenario and covers:
 - a callback number supplied with the lead;
 - callback collection when no incoming number is available;
 - acceptance and replacement of a simulated incoming number; and
-- the assigned associate announcement and call ending.
+- the associate follow-up announcement and call ending.
 
 Run one scenario against a locally started eval transport with:
 
@@ -30,8 +30,6 @@ RUNNER_BODY="$PWD/scenarios/incoming_call.json" \
 ./dev-eval.sh --verbose
 ```
 
-The four lead-completion scenarios use the configured Nutshell account and each
-create a real lead in `NEW BSI Pipeline`. This is required to exercise Nutshell's
-actual round-robin rule and verify that the agent announces the assigned
-associate's name and email address before ending the call. The routing-only
-scenarios do not create leads.
+Eval sessions disable Nutshell submission, so the lead-completion scenarios do
+not create real leads. They verify that the agent collects the lead information,
+confirms that a Billboard Source associate will follow up, and ends the call.

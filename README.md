@@ -48,12 +48,20 @@ ignored by Git; use `.env.example` as the safe configuration template.
 
 ## Nutshell leads
 
-Set the Nutshell user's email address and API key in your environment:
+Set the Nutshell user's email address, API key, and production submission flag in
+the deployed environment:
 
 ```dotenv
 NUTSHELL_EMAIL=user@example.com
 NUTSHELL_API_KEY=your-api-key
+NUTSHELL_LEAD_SUBMISSION_ENABLED=true
 ```
+
+Local eval and WebRTC sessions never submit leads. `dev-eval.sh` and
+`dev-twilio.sh` also disable submission, and `.env.example` defaults the flag to
+`false`, so testing locally cannot write test leads to Nutshell. When submission
+is disabled, the call still completes normally with a generic associate
+follow-up message.
 
 Create one lead through the Nutshell REST API:
 

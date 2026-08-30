@@ -17,13 +17,68 @@ from src.flows.tools import (
 )
 from src.flows.voicemail import (
     collect_business_lead,
+    collect_callback_number,
     collect_inquiry_type,
     confirm_callback_number,
+    create_associate_followup_node,
+    create_business_lead_node,
+    create_callback_confirmation_node,
+    create_callback_number_node,
     create_initial_node,
+    create_property_end_node,
 )
 
 
 class FlowTests(unittest.TestCase):
+    def test_fixed_speech_nodes_do_not_also_run_the_llm(self) -> None:
+        nodes = [
+            create_initial_node(),
+            create_property_end_node(),
+            create_business_lead_node(),
+            create_callback_confirmation_node(
+                "+15551234567",
+                uses_calling_phone=True,
+            ),
+            create_associate_followup_node(None, None),
+        ]
+
+        for node in nodes:
+            with self.subTest(node=node["name"]):
+                self.assertIs(node.get("respond_immediately"), False)
+
+        self.assertEqual(
+            nodes[1]["pre_actions"],
+            [
+                {
+                    "type": "tts_say",
+                    "text": (
+                        "Please Google a local sign company. Billboard Source helps "
+                        "clients find billboards to advertise on. Thanks for calling, "
+                        "goodbye."
+                    ),
+                },
+                {"type": "end_conversation"},
+            ],
+        )
+        self.assertNotIn("post_actions", nodes[1])
+        self.assertEqual(
+            nodes[4]["pre_actions"][-1],
+            {"type": "end_conversation"},
+        )
+        self.assertNotIn("post_actions", nodes[4])
+
+        callback_number_node = create_callback_number_node()
+        self.assertEqual(
+            callback_number_node["pre_actions"],
+            [
+                {
+                    "type": "tts_say",
+                    "text": "What is your best callback phone number?",
+                }
+            ],
+        )
+        self.assertIs(callback_number_node.get("respond_immediately"), False)
+
     def test_audit_log_persists_only_safe_submission_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = os.path.join(directory, "audit.jsonl")
@@ -79,8 +134,9 @@ class FlowTests(unittest.TestCase):
                 {
                     "type": "tts_say",
                     "text": (
-                        "Please Google a local sign company. Thanks for calling "
-                        "Billboard Source, goodbye."
+                        "Please Google a local sign company. Billboard Source helps "
+                        "clients find billboards to advertise on. Thanks for calling, "
+                        "goodbye."
                     ),
                 },
                 {"type": "end_conversation"},
@@ -102,14 +158,14 @@ class FlowTests(unittest.TestCase):
         for field in (
             "full name",
             "business information",
-            "location",
             "contact info",
         ):
             self.assertIn(field, request.get("text", ""))
+        self.assertNotIn("location", request.get("text", ""))
         self.assertNotIn("callback number", request.get("text", ""))
         self.assertIs(lead_node.get("respond_immediately"), False)
         prompt = lead_node["task_messages"][0]["content"]
-        self.assertIn("billboard location", prompt)
+        self.assertNotIn("location", prompt)
         self.assertIn("otherwise omit phone", prompt)
         self.assertIn("without repeating or confirming", prompt)
 
@@ -145,17 +201,94 @@ class FlowTests(unittest.TestCase):
                     flow_manager,
                     full_name="Jane Smith",
                     business_name="Example Company",
-                    billboard_location="Denver, CO",
                     email="jane@example.com",
                 )
             )
 
         create_lead.assert_not_awaited()
+        self.assertEqual(
+            flow_manager.state["pending_callback_phone"],
+            "+15551234567",
+        )
         self.assertEqual(next_node.get("name"), "confirm_callback_number")
         self.assertEqual(
             next_node["pre_actions"][0]["text"],
             "Is the number you are calling from a good callback number?",
         )
+
+    def test_this_number_resolves_to_incoming_number_before_confirmation(self) -> None:
+        flow_manager = cast(
+            FlowManager,
+            SimpleNamespace(state={"calling_phone": "+15551234567"}),
+        )
+        create_lead = AsyncMock()
+
+        with patch(
+            "src.flows.voicemail.submit_nutshell_lead",
+            new=create_lead,
+        ):
+            _, next_node = asyncio.run(
+                collect_business_lead(
+                    flow_manager,
+                    full_name="Jane Smith",
+                    business_name="Example Company",
+                    email="jane@example.com",
+                    phone="this number",
+                )
+            )
+
+        create_lead.assert_not_awaited()
+        self.assertEqual(
+            flow_manager.state["pending_callback_phone"],
+            "+15551234567",
+        )
+        self.assertEqual(next_node.get("name"), "confirm_callback_number")
+        self.assertEqual(
+            next_node["pre_actions"][0]["text"],
+            "Is the number you are calling from a good callback number?",
+        )
+
+    def test_missing_business_name_is_requested_before_phone_confirmation(self) -> None:
+        flow_manager = cast(
+            FlowManager,
+            SimpleNamespace(state={"calling_phone": "+15551234567"}),
+        )
+        create_lead = AsyncMock()
+
+        with patch(
+            "src.flows.voicemail.submit_nutshell_lead",
+            new=create_lead,
+        ):
+            _, next_node = asyncio.run(
+                collect_business_lead(
+                    flow_manager,
+                    full_name="Jane Smith",
+                    business_name="Not provided",
+                    email="jane@example.com",
+                    phone="this number",
+                )
+            )
+
+        create_lead.assert_not_awaited()
+        self.assertEqual(flow_manager.state["name"], "Jane Smith")
+        self.assertEqual(flow_manager.state["email"], "jane@example.com")
+        self.assertEqual(
+            flow_manager.state["pending_callback_phone"],
+            "+15551234567",
+        )
+        self.assertEqual(next_node.get("name"), "business_lead")
+        self.assertEqual(
+            next_node["pre_actions"],
+            [
+                {
+                    "type": "tts_say",
+                    "text": "What is the name of your business?",
+                }
+            ],
+        )
+        prompt = next_node["task_messages"][0]["content"]
+        self.assertIn("previously provided full name", prompt)
+        self.assertIn("business name", prompt)
 
     def test_confirmed_incoming_number_creates_lead(self) -> None:
         flow_manager = cast(
@@ -163,9 +296,9 @@ class FlowTests(unittest.TestCase):
             SimpleNamespace(
                 state={
                     "calling_phone": "+15551234567",
+                    "pending_callback_phone": "+15551234567",
                     "name": "Jane Smith",
                     "business_name": "Example Company",
-                    "billboard_location": "Denver, CO",
                     "email": "jane@example.com",
                 }
             ),
@@ -184,18 +317,9 @@ class FlowTests(unittest.TestCase):
         create_lead.assert_awaited_once_with({}, flow_manager)
         self.assertEqual(next_node.get("name"), "associate_followup")
 
-    def test_business_information_creates_round_robin_lead(self) -> None:
+    def test_supplied_phone_is_confirmed_before_lead_creation(self) -> None:
         flow_manager = cast(FlowManager, SimpleNamespace(state={}))
-        create_lead = AsyncMock(
-            return_value={
-                "id": "6-leads",
-                "assignee": {
-                    "id": "3-users",
-                    "name": "Alex",
-                    "email": "alex@example.com",
-                },
-            }
-        )
+        create_lead = AsyncMock()
 
         with patch(
             "src.flows.voicemail.submit_nutshell_lead",
@@ -206,7 +330,6 @@ class FlowTests(unittest.TestCase):
                     flow_manager,
                     full_name="Jane Smith",
                     business_name="Example Company",
-                    billboard_location="Denver, CO",
                     email="jane@example.com",
                     phone="+15551234567",
                 )
@@ -214,33 +337,91 @@ class FlowTests(unittest.TestCase):
 
         self.assertEqual(flow_manager.state["name"], "Jane Smith")
         self.assertEqual(flow_manager.state["business_name"], "Example Company")
-        self.assertEqual(flow_manager.state["billboard_location"], "Denver, CO")
+        self.assertNotIn("billboard_location", flow_manager.state)
         self.assertEqual(flow_manager.state["email"], "jane@example.com")
-        self.assertEqual(flow_manager.state["phone"], "+15551234567")
         self.assertEqual(
-            flow_manager.state["call_summary"],
-            "Jane Smith from Example Company wants billboard advertising in "
-            "Denver, CO. Contact: jane@example.com, +15551234567.",
+            flow_manager.state["pending_callback_phone"],
+            "+15551234567",
         )
-        create_lead.assert_awaited_once_with({}, flow_manager)
-        self.assertEqual(flow_manager.state["associate_name"], "Alex")
-        self.assertEqual(flow_manager.state["associate_email"], "alex@example.com")
-        self.assertEqual(next_node.get("name"), "associate_followup")
+        self.assertNotIn("phone", flow_manager.state)
+        self.assertNotIn("call_summary", flow_manager.state)
+        create_lead.assert_not_awaited()
+        self.assertEqual(next_node.get("name"), "confirm_callback_number")
         self.assertEqual(
-            next_node.get("pre_actions"),
+            next_node["pre_actions"],
             [
                 {
                     "type": "tts_say",
-                    "text": (
-                        "Alex is assigned to your request and will contact you soon. "
-                        "Their email address is alex@example.com. Thanks for calling "
-                        "Billboard Source, goodbye."
-                    ),
+                    "text": "Is +15551234567 the correct callback number?",
                 },
-                {"type": "end_conversation"},
             ],
         )
-        self.assertFalse(next_node.get("respond_immediately"))
+
+    def test_collected_replacement_phone_is_confirmed_before_lead_creation(self) -> None:
+        flow_manager = cast(
+            FlowManager,
+            SimpleNamespace(
+                state={
+                    "calling_phone": "+15550000000",
+                    "name": "Jane Smith",
+                    "business_name": "Example Company",
+                    "email": "jane@example.com",
+                }
+            ),
+        )
+        create_lead = AsyncMock()
+
+        with patch(
+            "src.flows.voicemail.submit_nutshell_lead",
+            new=create_lead,
+        ):
+            _, next_node = asyncio.run(
+                collect_callback_number(flow_manager, "+15551234567")
+            )
+
+        create_lead.assert_not_awaited()
+        self.assertEqual(
+            flow_manager.state["pending_callback_phone"],
+            "+15551234567",
+        )
+        self.assertEqual(next_node.get("name"), "confirm_callback_number")
+        self.assertEqual(
+            next_node["pre_actions"][0]["text"],
+            "Is +15551234567 the correct callback number?",
+        )
+
+    def test_confirmation_submits_staged_phone_instead_of_incoming_phone(self) -> None:
+        flow_manager = cast(
+            FlowManager,
+            SimpleNamespace(
+                state={
+                    "calling_phone": "+15550000000",
+                    "pending_callback_phone": "+15551234567",
+                    "name": "Jane Smith",
+                    "business_name": "Example Company",
+                    "email": "jane@example.com",
+                }
+            ),
+        )
+        create_lead = AsyncMock(return_value={"id": "6-leads"})
+
+        with patch(
+            "src.flows.voicemail.submit_nutshell_lead",
+            new=create_lead,
+        ):
+            _, next_node = asyncio.run(
+                confirm_callback_number(flow_manager, True)
+            )
+
+        self.assertEqual(flow_manager.state["phone"], "+15551234567")
+        self.assertEqual(
+            flow_manager.state["call_summary"],
+            "Jane Smith from Example Company wants billboard advertising. "
+            "Contact: jane@example.com, +15551234567. "
+            "Twilio caller number: +15550000000.",
+        )
+        create_lead.assert_awaited_once_with({}, flow_manager)
+        self.assertEqual(next_node.get("name"), "associate_followup")
 
     def test_transcript_excludes_prompts_and_tool_messages(self) -> None:
         context = LLMContext(
@@ -273,7 +454,6 @@ class FlowTests(unittest.TestCase):
                 state={
                     "name": "Jane Smith",
                     "business_name": "Example Company",
-                    "billboard_location": "Denver, CO",
                     "email": "jane@example.com",
                     "phone": "+15551234567",
                     "call_summary": "Caller wants a billboard in Denver.",
@@ -296,7 +476,7 @@ class FlowTests(unittest.TestCase):
         lead = awaited_call.args[0]
         self.assertEqual(lead.phone, "+15551234567")
         self.assertEqual(lead.email, "jane@example.com")
-        self.assertEqual(lead.billboard_location, "Denver, CO")
+        self.assertIsNone(lead.billboard_location)
         self.assertEqual(lead.notes, "Caller wants a billboard in Denver.")
         self.assertEqual(
             lead.transcript,
@@ -329,8 +509,54 @@ class FlowTests(unittest.TestCase):
             self.fail("Expected the phone-only Nutshell lead call")
         self.assertEqual(awaited_call.args[0].phone, "+15551234567")
 
+    def test_nutshell_action_skips_lead_when_submission_is_disabled(self) -> None:
+        flow_manager = cast(
+            FlowManager,
+            SimpleNamespace(
+                state={
+                    "nutshell_submission_enabled": False,
+                    "phone": "+15551234567",
+                }
+            ),
+        )
+        create_lead = AsyncMock(return_value={"id": "6-leads"})
+
+        with patch(
+            "src.flows.tools.create_nutshell_lead",
+            new=create_lead,
+        ):
+            result = asyncio.run(submit_nutshell_lead({}, flow_manager))
+
+        self.assertIsNone(result)
+        create_lead.assert_not_awaited()
+
+    def test_nutshell_action_honors_disabled_environment_flag(self) -> None:
+        flow_manager = cast(
+            FlowManager,
+            SimpleNamespace(state={"phone": "+15551234567"}),
+        )
+        create_lead = AsyncMock(return_value={"id": "6-leads"})
+
+        with (
+            patch.dict(
+                os.environ,
+                {"NUTSHELL_LEAD_SUBMISSION_ENABLED": "false"},
+            ),
+            patch(
+                "src.flows.tools.create_nutshell_lead",
+                new=create_lead,
+            ),
+        ):
+            result = asyncio.run(submit_nutshell_lead({}, flow_manager))
+
+        self.assertIsNone(result)
+        create_lead.assert_not_awaited()
+
     def test_nutshell_action_skips_lead_without_caller_details(self) -> None:
-        flow_manager = cast(FlowManager, SimpleNamespace(state={}))
+        flow_manager = cast(
+            FlowManager,
+            SimpleNamespace(state={"billboard_location": "Denver, CO"}),
+        )
         create_lead = AsyncMock(return_value={"id": "6-leads"})
 
         with patch(

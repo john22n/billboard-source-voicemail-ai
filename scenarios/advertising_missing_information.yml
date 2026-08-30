@@ -1,5 +1,5 @@
-# This scenario creates a real Nutshell lead after exercising incremental data
-# collection and the no-incoming-number callback path.
+# This scenario exercises incremental data collection and the no-incoming-number
+# callback path without submitting a real Nutshell lead.
 name: advertising_missing_information_and_callback_collection
 
 judge: !include config/audio_judge.yml
@@ -19,16 +19,15 @@ turns:
   - user: "My full name is Evaltest Missingfields and my business is Voice Eval Missing Fields."
     expect:
       - event: tts_response
-        eval: "the bot asks in one concise request only for the missing target city and state and email address; it does not ask again for the caller's name or business name"
+        eval: "the bot asks only for the missing email address; it does not ask for a location or ask again for the caller's name or business name"
 
-  - user: "I want to advertise in Denver, Colorado, and my email is voiceeval+missing@example.com."
+  - user: "My email is voiceeval+missing@example.com."
     expect:
       - event: function_call
         name: collect_business_lead
         args:
           full_name: Evaltest Missingfields
           business_name: Voice Eval Missing Fields
-          billboard_location: Denver, Colorado
           email: voiceeval+missing@example.com
       - event: tts_response
         eval: "the bot asks only for the caller's best callback phone number"
@@ -40,4 +39,13 @@ turns:
         args:
           phone: 720-555-0143
       - event: tts_response
-        eval: "the bot names the specific associate assigned to the request, gives that associate's email address, says the associate will contact the caller soon, thanks the caller, and says goodbye without asking another question"
+        eval: "the bot repeats 720-555-0143 and asks the caller to confirm that it is the correct callback number"
+
+  - user: "Yes, that is correct."
+    expect:
+      - event: function_call
+        name: confirm_callback_number
+        args:
+          is_good_callback: true
+      - event: tts_response
+        eval: "the bot says a Billboard Source associate will contact the caller soon, thanks the caller, and says goodbye without asking another question"

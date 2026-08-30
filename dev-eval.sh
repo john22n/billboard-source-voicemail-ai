@@ -63,7 +63,7 @@ if [[ -n "$RUNNER_BODY" ]]; then
 fi
 
 echo "Starting the app with the eval transport on http://$HOST:$PORT ..."
-uv run dotenv -f "$ENV_FILE" run -- \
+NUTSHELL_LEAD_SUBMISSION_ENABLED=false uv run dotenv -f "$ENV_FILE" run -- \
     uv run python "$SCRIPT_DIR/main.py" "${APP_ARGS[@]}" &
 APP_PID=$!
 

@@ -1,5 +1,5 @@
 # Run with incoming_call.json so the eval bot has a simulated Twilio caller number.
-# This scenario creates a real Nutshell lead with the replacement number.
+# Local eval sessions do not submit the collected lead to Nutshell.
 name: advertising_incoming_callback_replaced
 
 judge: !include config/audio_judge.yml
@@ -16,14 +16,13 @@ turns:
       - event: tts_response
         text_contains: "Billboard Source can help. All our leasing managers are busy"
 
-  - user: "My name is Evaltest Incomingreplaced. My business is Voice Eval Incoming Replaced. I want to advertise in Boston, Massachusetts. My email is voiceeval+replaced@example.com."
+  - user: "My name is Evaltest Incomingreplaced. My business is Voice Eval Incoming Replaced. My email is voiceeval+replaced@example.com."
     expect:
       - event: function_call
         name: collect_business_lead
         args:
           full_name: Evaltest Incomingreplaced
           business_name: Voice Eval Incoming Replaced
-          billboard_location: Boston, Massachusetts
           email: voiceeval+replaced@example.com
       - event: tts_response
         text_contains: "Is the number you are calling from a good callback number?"
@@ -44,4 +43,13 @@ turns:
         args:
           phone: 646-555-0145
       - event: tts_response
-        eval: "the bot names the specific associate assigned to the request, gives that associate's email address, says the associate will contact the caller soon, thanks the caller, and says goodbye without asking another question"
+        eval: "the bot repeats 646-555-0145 and asks the caller to confirm that it is the correct callback number"
+
+  - user: "Yes, that is correct."
+    expect:
+      - event: function_call
+        name: confirm_callback_number
+        args:
+          is_good_callback: true
+      - event: tts_response
+        eval: "the bot says a Billboard Source associate will contact the caller soon, thanks the caller, and says goodbye without asking another question"

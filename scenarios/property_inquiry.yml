@@ -5,11 +5,11 @@ judge: !include config/audio_judge.yml
 turns:
   - expect: !include config/opening_expectations.yml
 
-  - user: "Yes, I want to build a billboard on my property."
+  - user: "I was calling about a board on my property."
     expect:
       - event: function_call
         name: collect_inquiry_type
         args:
           inquiry_type: property
       - event: tts_response
-        text_contains: "Please Google a local sign company. Thanks for calling Billboard Source, goodbye."
+        text_contains: "Please Google a local sign company. Billboard Source helps clients find billboards to advertise on. Thanks for calling, goodbye."

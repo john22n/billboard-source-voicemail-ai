@@ -9,7 +9,7 @@ suite:
       - inquire_question.yml
       - advertising_negated_property.yml
       - property_inquiry.yml
-      - advertising_lead_assignment.yml
+      - advertising_lead_completion.yml
       - advertising_missing_information.yml
 
   - bot: main.py

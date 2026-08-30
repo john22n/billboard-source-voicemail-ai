@@ -4,7 +4,7 @@ from typing import Any, cast
 
 from dotenv import load_dotenv
 from loguru import logger
-from pipecat.audio.vad.silero import SileroVADAnalyzer
+from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
 from pipecat.evals.transport import EvalTransportParams
 from pipecat.flows import FlowManager
 from pipecat.pipeline.pipeline import Pipeline
@@ -12,15 +12,19 @@ from pipecat.pipeline.worker import PipelineParams, PipelineWorker
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import (
     LLMContextAggregatorPair,
-    LLMUserAggregatorParams,
 )
-from pipecat.runner.types import EvalRunnerArguments, RunnerArguments
+from pipecat.runner.types import (
+    EvalRunnerArguments,
+    RunnerArguments,
+    SmallWebRTCRunnerArguments,
+)
 from pipecat.runner.utils import create_transport
 from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.services.openai.stt import OpenAIRealtimeSTTService
 from pipecat.services.openai.tts import OpenAITTSService
 from pipecat.transports.base_transport import BaseTransport, TransportParams
 from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams
+from pipecat.utils.tracing.setup import setup_tracing
 from pipecat.workers.runner import WorkerRunner
 
 from src.data_source.twilio import get_call_info
@@ -29,6 +33,22 @@ from src.flows.voicemail import create_initial_node
 from src.system_prompts.voicemail import initial_message
 
 load_dotenv(override=True)
+
+IS_TRACING_ENABLED = bool(os.getenv("ENABLE_TRACING"));
+
+if IS_TRACING_ENABLED:
+    otlp_exporter = OTLPSpanExporter(
+            endpoint=os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317"),
+            insecure=True,
+            )
+
+    setup_tracing(
+            service_name="BSIAI_voicemail-agent",
+            exporter=otlp_exporter,
+            console_export=bool(os.getenv("OTEL_CONSOLE_EXPORT")),
+            )
+    logger.info("OpenTelemetry tracing initialized")
+
 
 transport_params = {
         "eval": lambda: EvalTransportParams(
@@ -65,8 +85,9 @@ async def run_bot(
     # the ears: stream the caller's audio to openai and emits text.
     stt = OpenAIRealtimeSTTService(
             api_key = api_key,
+            turn_detection = {"type": "server_vad"},
             settings = OpenAIRealtimeSTTService.Settings(
-                model = "gpt-realtime-whisper",
+                model = "gpt-4o-transcribe",
                 ),
             )
 
@@ -74,28 +95,17 @@ async def run_bot(
     llm = OpenAILLMService(
             api_key = api_key,
             settings = OpenAILLMService.Settings(
-                model = "gpt-4.1",
+                model = "gpt-5.6-luna",
                 system_instruction = initial_message,
+                extra = {"reasoning_effort": "none"},
                 ),
             )
-
-    # the mouth of the operation tts
-    instructions = """Voice: Warm, upbeat, and reassuring, with a steady
-    and confident cadence that keeps the conversation calm and productive.\n\n
-    Tone: Positive and solution-oriented, always focusing on the next steps rather
-    than dwelling on the problem.\n\nDialect: Neutral and professional,
-    avoiding overly casual speech but maintaining a friendly and approachable style.
-    \n\nPronunciation: Clear and precise, with a natural rhythm that emphasizes
-    key words to instill confidence and keep the customer engaged.
-    \n\nFeatures: Uses empathetic phrasing, gentle reassurance,
-    and proactive language to shift the focus from frustration to resolution."""
 
     tts = OpenAITTSService(
             api_key = api_key,
             settings = OpenAITTSService.Settings(
                 model = "gpt-4o-mini-tts",
                 voice = "marin",
-                instructions = instructions,
                 speed = 1.15,
                 ),
             )
@@ -103,13 +113,8 @@ async def run_bot(
     # store the conversation passed to the LLM
     context = LLMContext()
 
-    # silero detects when the caller starts and stops speaking
-    context_aggregator = LLMContextAggregatorPair(
-            context,
-            user_params = LLMUserAggregatorParams(
-                vad_analyzer = SileroVADAnalyzer(),
-                ),
-            )
+    # OpenAI STT detects when the caller starts and stops speaking.
+    context_aggregator = LLMContextAggregatorPair(context)
 
     pipeline = Pipeline(
             [
@@ -129,6 +134,7 @@ async def run_bot(
                 enable_metrics = True,
                 enable_usage_metrics = True,
                 ),
+            enable_tracing=IS_TRACING_ENABLED,
             idle_timeout_secs = runner_args.pipeline_idle_timeout_secs,
             )
 
@@ -139,6 +145,10 @@ async def run_bot(
             transport = transport,
             )
     flow_manager.state["llm_context"] = context
+    flow_manager.state["nutshell_submission_enabled"] = not isinstance(
+            runner_args,
+            (EvalRunnerArguments, SmallWebRTCRunnerArguments),
+            )
 
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client) -> None:

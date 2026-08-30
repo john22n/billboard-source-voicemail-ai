@@ -96,7 +96,7 @@ PROXY_HOST="${PUBLIC_URL#https://}"
 PROXY_HOST="${PROXY_HOST#http://}"
 PROXY_HOST="${PROXY_HOST%/}"
 
-uv run python main.py \
+NUTSHELL_LEAD_SUBMISSION_ENABLED=false uv run python main.py \
     --host "$HOST" \
     --port "$PORT" \
     --transport twilio \
