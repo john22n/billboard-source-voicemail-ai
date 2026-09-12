@@ -95,6 +95,7 @@ fi
 PROXY_HOST="${PUBLIC_URL#https://}"
 PROXY_HOST="${PROXY_HOST#http://}"
 PROXY_HOST="${PROXY_HOST%/}"
+export PUBLIC_HOST="$PROXY_HOST"
 
 NUTSHELL_LEAD_SUBMISSION_ENABLED=false uv run python main.py \
     --host "$HOST" \

@@ -10,6 +10,12 @@ the call's `from` and `to` fields.
 Set `TWILIO_ACCOUNT_SID` and `TWILIO_AUTH_TOKEN` in your local `.env` file. No
 Twilio resource identifiers or credentials are stored in the repository.
 
+When the Twilio transport is selected, both the `POST /` voice webhook and the
+`/ws` Media Streams handshake require a valid `X-Twilio-Signature`. The service
+fails closed if `TWILIO_AUTH_TOKEN` or `PUBLIC_HOST` is missing. Signatures are
+checked against the canonical public URLs (`https://PUBLIC_HOST/` and
+`https://PUBLIC_HOST/ws`), not the internal Docker/Nginx request URL.
+
 ### Run Twilio locally with ngrok
 
 Install and authenticate the ngrok CLI once, then start both Pipecat and ngrok
@@ -99,9 +105,10 @@ potentially sensitive call data and do not expose the UI publicly.
 
 The container currently uses Pipecat's development runner because it owns the
 Twilio `POST /` and `/ws` dispatch flow. This is appropriate for a low-volume,
-single-VPS deployment, but it is not horizontally scalable and does not provide
-Twilio signature validation or admission control. Keep the reverse proxy in
-front of it and move to a production dispatcher before increasing traffic.
+single-VPS deployment, but it is not horizontally scalable. Application
+middleware validates Twilio signatures before either runner route executes or
+the bot starts. Keep the reverse proxy in front of it and move to a production
+dispatcher before increasing traffic.
 
 ## Neon billboard locations
 
