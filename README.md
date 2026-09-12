@@ -11,10 +11,12 @@ Set `TWILIO_ACCOUNT_SID` and `TWILIO_AUTH_TOKEN` in your local `.env` file. No
 Twilio resource identifiers or credentials are stored in the repository.
 
 When the Twilio transport is selected, both the `POST /` voice webhook and the
-`/ws` Media Streams handshake require a valid `X-Twilio-Signature`. The service
-fails closed if `TWILIO_AUTH_TOKEN` or `PUBLIC_HOST` is missing. Signatures are
-checked against the canonical public URLs (`https://PUBLIC_HOST/` and
-`https://PUBLIC_HOST/ws`), not the internal Docker/Nginx request URL.
+`/ws` Media Streams handshake (including `/ws/{token}`) require a valid
+`X-Twilio-Signature`. The service fails closed if `TWILIO_AUTH_TOKEN` or the
+public hostname is missing. The hostname comes from `--proxy`, falling back to
+`PUBLIC_HOST`. Signatures are checked against the canonical public HTTPS URLs,
+not the internal Docker/Nginx request URL. An unsigned `POST /` returns 403;
+unsigned WebSocket connections are rejected before the bot starts.
 
 ### Run Twilio locally with ngrok
 
@@ -109,6 +111,30 @@ single-VPS deployment, but it is not horizontally scalable. Application
 middleware validates Twilio signatures before either runner route executes or
 the bot starts. Keep the reverse proxy in front of it and move to a production
 dispatcher before increasing traffic.
+
+### Call limits and overflow voicemail
+
+The Twilio server defaults to two concurrent AI sessions and a 300-second
+session deadline. Configure `MAX_CONCURRENT_CALLS`, `MAX_CALL_DURATION_SECONDS`,
+and `VOICEMAIL_RECORDING_SECONDS` (default 120) in `.env`.
+Limits apply to one process: do not run multiple workers or replicas expecting
+a shared limit. Pending connections reserve capacity for 30 seconds; admission
+tokens are single-use. Authentication runs before admission control.
+
+When full, the webhook returns Twilio `<Record>` instructions instead of starting
+an AI session. Recordings are stored in Twilio and can be reviewed in its Console;
+this does not create Nutshell leads or send recording notifications. Configure
+recording retention and authenticated media access in Twilio for sensitive data.
+At the AI deadline the WebSocket is closed and the remaining TwiML says goodbye
+and hangs up. This limits AI session time, not time already spent in TaskRouter.
+
+When deploying this change, update the Nginx WebSocket location to
+`location ~ ^/ws(?:/[A-Za-z0-9_-]+)?$` while preserving its proxy directives.
+The stream URL now contains a reservation token in its path. Keep port 7860 and
+Jaeger bound to loopback as in `compose.yaml`; do not publish Jaeger's OTLP ports.
+Rebuild the app after deploying the code. Verify overflow with a second call
+and `MAX_CONCURRENT_CALLS=1`, and test the deadline with a short duration before
+restoring production settings. An unsigned public POST should return 403.
 
 ## Neon billboard locations
 

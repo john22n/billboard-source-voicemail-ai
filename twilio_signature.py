@@ -37,7 +37,7 @@ class TwilioSignatureMiddleware:
             return
         if (
             request_type == "websocket"
-            and path in {"/ws", "/ws/"}
+            and (path == "/ws" or path.startswith("/ws/"))
             and not self._is_valid(scope, {})
         ):
             await send({"type": "websocket.close", "code": 1008})
