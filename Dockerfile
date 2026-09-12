@@ -28,6 +28,7 @@ WORKDIR /app
 
 COPY --from=builder --chown=app:app /app/.venv /app/.venv
 COPY --chown=app:app bot.py main.py ./
+COPY --chown=app:app twilio_signature.py call_limits.py ./
 COPY --chown=app:app src ./src
 COPY --chmod=755 docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
