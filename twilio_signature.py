@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable
-from urllib.parse import parse_qsl
+from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
 from multidict import MultiDict
 from twilio.request_validator import RequestValidator
@@ -40,6 +41,9 @@ class TwilioSignatureMiddleware:
             and (path == "/ws" or path.startswith("/ws/"))
             and not self._is_valid(scope, {})
         ):
+            logging.getLogger(__name__).warning(
+                "Twilio WebSocket rejected: missing or invalid signature"
+            )
             await send({"type": "websocket.close", "code": 1008})
             return
         await self.app(scope, receive, send)
@@ -77,11 +81,18 @@ class TwilioSignatureMiddleware:
         signature = dict(self._headers(scope)).get(b"x-twilio-signature", b"")
         if not signature:
             return False
-        return self.validator.validate(
-            self._canonical_url(scope),
-            params,
-            signature.decode("latin-1"),
-        )
+        url = self._canonical_url(scope)
+        signature = signature.decode("latin-1")
+        if self.validator.validate(url, params, signature):
+            return True
+        if scope["type"] == "websocket":
+            # Twilio documents a trailing-slash variant for Voice WSS signatures:
+            # https://www.twilio.com/docs/usage/security#notes
+            parts = urlsplit(url)
+            if not parts.path.endswith("/"):
+                alternate = urlunsplit(parts._replace(path=parts.path + "/"))
+                return self.validator.validate(alternate, params, signature)
+        return False
 
     def _canonical_url(self, scope) -> str:
         # TLS terminates at Nginx, so internal request metadata cannot provide the
