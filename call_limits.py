@@ -1,6 +1,7 @@
 """Single-process admission control for authenticated Twilio calls."""
 
 import asyncio
+import logging
 import os
 import secrets
 import time
@@ -75,6 +76,9 @@ class CallLimitsMiddleware:
             token = path.removeprefix("/ws/")
             expiry = self.pending.pop(token, 0)
             if expiry <= time.monotonic():
+                logging.getLogger(__name__).warning(
+                    "Twilio WebSocket rejected: missing, expired, or consumed reservation"
+                )
                 await send({"type": "websocket.close", "code": 1008})
                 return
             self.active.add(token)

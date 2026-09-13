@@ -88,6 +88,23 @@ class TwilioSignatureTests(unittest.TestCase):
             ):
                 self.fail("unsigned WebSocket unexpectedly connected")
 
+    def test_twilio_trailing_slash_signature_on_tokenized_handshake(self) -> None:
+        signature = RequestValidator(AUTH_TOKEN).compute_signature(
+            f"https://{PUBLIC_HOST}/ws/reservation-token/", {}
+        )
+        with signed_app().websocket_connect(
+            "/ws/reservation-token", headers={"X-Twilio-Signature": signature}
+        ) as websocket:
+            self.assertEqual(websocket.receive_text(), "bot-started")
+
+        with (
+            self.assertRaises(WebSocketDisconnect),
+            signed_app().websocket_connect(
+                "/ws/another-token", headers={"X-Twilio-Signature": signature}
+            ),
+        ):
+            self.fail("signature for another reservation was accepted")
+
     def test_tampered_websocket_url_is_rejected(self) -> None:
         signature = RequestValidator(AUTH_TOKEN).compute_signature(
             f"https://{PUBLIC_HOST}/ws?call=original", {}
