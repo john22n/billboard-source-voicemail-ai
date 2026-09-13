@@ -14,8 +14,9 @@ When the Twilio transport is selected, both the `POST /` voice webhook and the
 `/ws` Media Streams handshake (including `/ws/{token}`) require a valid
 `X-Twilio-Signature`. The service fails closed if `TWILIO_AUTH_TOKEN` or the
 public hostname is missing. The hostname comes from `--proxy`, falling back to
-`PUBLIC_HOST`. Signatures are checked against the canonical public HTTPS URLs,
-not the internal Docker/Nginx request URL. An unsigned `POST /` returns 403;
+`PUBLIC_HOST`. HTTP signatures use the public HTTPS URL; WebSocket signatures
+use the public WSS stream URL, with HTTPS and trailing-slash compatibility.
+Neither uses the internal Docker/Nginx URL. An unsigned `POST /` returns 403;
 unsigned WebSocket connections are rejected before the bot starts.
 
 ### Run Twilio locally with ngrok
