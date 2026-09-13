@@ -1,10 +1,13 @@
 import unittest
+from urllib.parse import urlsplit
+from xml.etree import ElementTree
 
 from fastapi import FastAPI, Request, WebSocket
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 from twilio.request_validator import RequestValidator
 
+from call_limits import CallLimitsMiddleware
 from main import _runner_options
 from twilio_signature import (
     TwilioSignatureMiddleware,
@@ -15,7 +18,7 @@ AUTH_TOKEN = "test-auth-token"
 PUBLIC_HOST = "voicemail-agent.john22n-iii.com"
 
 
-def signed_app() -> TestClient:
+def signed_app(*, with_limits=False) -> TestClient:
     app = FastAPI()
 
     @app.post("/")
@@ -29,6 +32,8 @@ def signed_app() -> TestClient:
         await websocket.send_text("bot-started")
         await websocket.close()
 
+    if with_limits:
+        app.add_middleware(CallLimitsMiddleware, public_host=PUBLIC_HOST)
     app.add_middleware(
         TwilioSignatureMiddleware,
         auth_token=AUTH_TOKEN,
@@ -38,6 +43,46 @@ def signed_app() -> TestClient:
 
 
 class TwilioSignatureTests(unittest.TestCase):
+    def test_generated_stream_url_can_authenticate_and_claim_its_reservation(self):
+        client = signed_app(with_limits=True)
+        validator = RequestValidator(AUTH_TOKEN)
+        response = client.post(
+            "/",
+            data={},
+            headers={
+                "X-Twilio-Signature": validator.compute_signature(
+                    f"https://{PUBLIC_HOST}/", {}
+                )
+            },
+        )
+        stream_url = (
+            ElementTree.fromstring(response.text).find("Connect/Stream").attrib["url"]
+        )
+        self.assertTrue(stream_url.startswith(f"wss://{PUBLIC_HOST}/ws/"))
+        signature = validator.compute_signature(stream_url, {})
+        with client.websocket_connect(
+            urlsplit(stream_url).path, headers={"X-Twilio-Signature": signature}
+        ) as websocket:
+            self.assertEqual(websocket.receive_text(), "bot-started")
+
+    def test_wss_variants_preserve_host_path_and_query_validation(self):
+        for slash in ("", "/"):
+            signature = RequestValidator(AUTH_TOKEN).compute_signature(
+                f"wss://{PUBLIC_HOST}/ws/token{slash}?call=original", {}
+            )
+            with signed_app().websocket_connect(
+                "/ws/token?call=original", headers={"X-Twilio-Signature": signature}
+            ) as websocket:
+                self.assertEqual(websocket.receive_text(), "bot-started")
+            for path in ("/ws/other?call=original", "/ws/token?call=tampered"):
+                with (
+                    self.assertRaises(WebSocketDisconnect),
+                    signed_app().websocket_connect(
+                        path, headers={"X-Twilio-Signature": signature}
+                    ),
+                ):
+                    self.fail("tampered WebSocket accepted")
+
     def test_signed_webhook_is_accepted_using_public_proxy_url(self) -> None:
         params = {"CallSid": "CA123", "From": "+15551234567"}
         signature = RequestValidator(AUTH_TOKEN).compute_signature(

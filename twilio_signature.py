@@ -41,8 +41,10 @@ class TwilioSignatureMiddleware:
             and (path == "/ws" or path.startswith("/ws/"))
             and not self._is_valid(scope, {})
         ):
+            present = bool(dict(self._headers(scope)).get(b"x-twilio-signature"))
             logging.getLogger(__name__).warning(
-                "Twilio WebSocket rejected: missing or invalid signature"
+                "Twilio WebSocket rejected: %s signature",
+                "invalid" if present else "missing",
             )
             await send({"type": "websocket.close", "code": 1008})
             return
@@ -83,21 +85,28 @@ class TwilioSignatureMiddleware:
             return False
         url = self._canonical_url(scope)
         signature = signature.decode("latin-1")
-        if self.validator.validate(url, params, signature):
-            return True
+        urls = [url]
         if scope["type"] == "websocket":
+            # Prefer the exact wss:// URL emitted in TwiML. Retain HTTPS
+            # compatibility for existing handshake integrations.
+            parts = urlsplit(url)
+            urls.append(urlunsplit(parts._replace(scheme="https")))
             # Twilio documents a trailing-slash variant for Voice WSS signatures:
             # https://www.twilio.com/docs/usage/security#notes
-            parts = urlsplit(url)
             if not parts.path.endswith("/"):
-                alternate = urlunsplit(parts._replace(path=parts.path + "/"))
-                return self.validator.validate(alternate, params, signature)
-        return False
+                urls.extend(
+                    urlunsplit(urlsplit(candidate)._replace(path=parts.path + "/"))
+                    for candidate in tuple(urls)
+                )
+        return any(
+            self.validator.validate(candidate, params, signature) for candidate in urls
+        )
 
     def _canonical_url(self, scope) -> str:
         # TLS terminates at Nginx, so internal request metadata cannot provide the
-        # URL Twilio signed. WebSocket handshakes are signed as HTTPS requests.
-        url = f"https://{self.public_host}{scope.get('raw_path', b'/').decode('ascii')}"
+        # public URL. Use the scheme of the TwiML stream for WebSockets.
+        scheme = "wss" if scope["type"] == "websocket" else "https"
+        url = f"{scheme}://{self.public_host}{scope.get('raw_path', b'/').decode('ascii')}"
         query = scope.get("query_string", b"")
         if query:
             url += f"?{query.decode('ascii')}"
