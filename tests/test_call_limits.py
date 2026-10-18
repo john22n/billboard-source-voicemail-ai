@@ -92,6 +92,56 @@ class CallLimitsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(messages[0]["code"], 1008)
         self.bot.assert_not_awaited()
 
+    async def test_stuck_shutdown_exits_without_releasing_capacity(self):
+        for stuck in ("session", "close", "server_cancel"):
+            with self.subTest(stuck=stuck):
+                self.setUp()
+                self.limits.max_seconds = 0.01
+                self.limits.SHUTDOWN_GRACE_SECONDS = 0.05
+                shutting_down = asyncio.Event()
+                release = asyncio.Event()
+                children = []
+
+                async def running(*args):
+                    children.append(asyncio.current_task())
+                    try:
+                        await asyncio.Event().wait()
+                    finally:
+                        if stuck != "close":
+                            shutting_down.set()
+                            await release.wait()
+
+                async def send(message):
+                    if message["type"] == "websocket.close" and stuck == "close":
+                        children.append(asyncio.current_task())
+                        shutting_down.set()
+                        await release.wait()
+
+                self.bot.side_effect = running
+                path = await self.reserve()
+                scope = {"type": "websocket", "path": path}
+                with patch(
+                    "call_limits.os._exit", side_effect=RuntimeError("process exit")
+                ) as exit_process:
+                    task = asyncio.create_task(self.limits(scope, AsyncMock(), send))
+                    try:
+                        await asyncio.wait_for(shutting_down.wait(), timeout=1)
+                        messages = await self.request()
+                        self.assertIn(b"<Record", messages[-1]["body"])
+                        if stuck == "server_cancel":
+                            task.cancel()
+                            await asyncio.sleep(0)
+                            task.cancel()
+                        with self.assertRaisesRegex(RuntimeError, "process exit"):
+                            await asyncio.wait_for(task, timeout=1)
+                        exit_process.assert_called_once_with(1)
+                        self.assertTrue(self.limits.active)
+                        messages = await self.request()
+                        self.assertIn(b"<Record", messages[-1]["body"])
+                    finally:
+                        release.set()
+                        await asyncio.gather(*children, return_exceptions=True)
+
     async def test_unsigned_request_cannot_reserve_capacity(self):
         secured = TwilioSignatureMiddleware(
             self.limits, auth_token="test", public_host="voice.example.com"

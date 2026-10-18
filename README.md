@@ -129,6 +129,16 @@ recording retention and authenticated media access in Twilio for sensitive data.
 At the AI deadline the WebSocket is closed and the remaining TwiML says goodbye
 and hangs up. This limits AI session time, not time already spent in TaskRouter.
 
+Session cancellation and deadline-triggered WebSocket closure have a shared
+10-second shutdown grace period. Capacity stays reserved until both finish.
+If either hangs, the server logs a critical shutdown error and exits with code 1
+without waiting for graceful shutdown. This deliberately interrupts other active
+calls and may interrupt lead submission; it avoids leaving stuck AI tasks alive
+while admitting replacements. The existing Compose `restart: unless-stopped`
+policy restarts the exited process. Other launch methods need an equivalent
+process supervisor; Docker's unhealthy status alone does not restart a container.
+This deadline requires a responsive event loop, not a CPU-blocked process.
+
 When deploying this change, update the Nginx WebSocket location to
 `location ~ ^/ws(?:/[A-Za-z0-9_-]+)?$` while preserving its proxy directives.
 The stream URL now contains a reservation token in its path. Keep port 7860 and

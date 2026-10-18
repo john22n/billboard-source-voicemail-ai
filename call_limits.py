@@ -12,6 +12,10 @@ from twilio.twiml.voice_response import Connect, VoiceResponse
 
 
 class CallLimitsMiddleware:
+    # A stuck session must not be abandoned while admitting replacement calls.
+    # The container supervisor restarts this process if shutdown cannot finish.
+    SHUTDOWN_GRACE_SECONDS = 10
+
     def __init__(
         self,
         app,
@@ -93,20 +97,48 @@ class CallLimitsMiddleware:
                 await send(message)
 
             session = asyncio.create_task(self.app(scope, receive, guarded_send))
+            shutdown_tasks = {session}
             try:
                 done, _ = await asyncio.wait({session}, timeout=self.max_seconds)
                 if done:
                     await session
                 else:
-                    # Close audio before cancellation cleanup (which may submit
-                    # a lead over the network) so it cannot extend the call.
-                    await guarded_send({"type": "websocket.close", "code": 1000})
+                    # Closing the socket can itself hang. Observe it alongside
+                    # session cancellation under the same shutdown deadline.
+                    shutdown_tasks.add(
+                        asyncio.create_task(
+                            guarded_send({"type": "websocket.close", "code": 1000})
+                        )
+                    )
             finally:
                 session.cancel()
-                try:
-                    await asyncio.gather(session, return_exceptions=True)
-                finally:
-                    self.active.discard(token)
+                deadline = time.monotonic() + self.SHUTDOWN_GRACE_SECONDS
+                pending = shutdown_tasks
+                cancelled = False
+                while pending:
+                    try:
+                        _, pending = await asyncio.wait(
+                            pending, timeout=max(0, deadline - time.monotonic())
+                        )
+                    except asyncio.CancelledError:
+                        # Repeated server cancellation must not bypass recovery
+                        # or reset the grace period.
+                        cancelled = True
+                        continue
+                    if pending:
+                        logging.getLogger(__name__).critical(
+                            "Call shutdown exceeded %ss; exiting process for supervisor recovery",
+                            self.SHUTDOWN_GRACE_SECONDS,
+                        )
+                        # Graceful shutdown can wait on the same stuck tasks.
+                        # Exit without releasing their slots or orphaning them.
+                        os._exit(1)
+                for task in shutdown_tasks:
+                    if not task.cancelled():
+                        task.exception()  # Retrieve shutdown failures.
+                self.active.discard(token)
+                if cancelled:
+                    raise asyncio.CancelledError
             return
         await self.app(scope, receive, send)
 
