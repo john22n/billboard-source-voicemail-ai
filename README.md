@@ -1,5 +1,48 @@
 # billboard-source-voicemail-ai
-python app using pipecat to create a voicemail AI system
+
+A Python voice agent that handles billboard sales inquiries, looks up caller and
+billboard-location information, and captures qualified leads in Nutshell CRM.
+It gives callers a way to leave useful sales information when an AI session is
+available, with recorded voicemail as the capacity-overflow path.
+
+## How it works and why
+
+- **Streaming conversation:** [bot.py](bot.py) connects Twilio audio to Pipecat's
+  speech-to-text, OpenAI language model, text-to-speech, and conversation context.
+  Separate stages make speech and response generation explicit rather than
+  treating the call as a single opaque request.
+- **Business data and follow-up:** [flow tools](src/flows/tools.py) connect the
+  conversation to [Nutshell](src/data_source/nutshell.py) and
+  [PostgreSQL location data](src/data_source/neon.py). Leads are assigned through
+  Nutshell's rules; this is not a live call-transfer system.
+- **Authenticate before allocating capacity:** [main.py](main.py) installs
+  [Twilio signature validation](twilio_signature.py) ahead of
+  [call admission and deadlines](call_limits.py). Limits are per process, not a
+  distributed quota. A stuck shutdown exits the process for supervisor recovery,
+  trading interruption of other active calls for bounded resource use.
+- **Deployment and diagnosis:** the [Docker image](Dockerfile) runs as a non-root
+  user. [Compose](compose.yaml) keeps the application and Jaeger on loopback for
+  use behind a TLS reverse proxy. Tracing helps inspect pipeline behavior; it is
+  not a claim about measured latency or model accuracy.
+
+## Review and test safely
+
+This is a telephony integration, not an anonymous public demo. Production webhooks
+can incur provider charges and create customer records; do not use them as demo
+links. Use the local setup below with your own test accounts. A sanitized demo
+recording is not yet available.
+
+Requires Python 3.13+ and [uv](https://docs.astral.sh/uv/):
+
+```bash
+uv sync --locked
+uv run python -m unittest discover -s tests -v
+```
+
+The [test suite](tests/) and [CI workflow](.github/workflows/ci.yml) cover automated
+checks; they do not establish production call quality. The existing local Twilio
+and evaluation scripts disable lead submission. Keep credentials out of Git and
+review the operational limits below before enabling a real phone number.
 
 ## Twilio caller information
 
